@@ -40,30 +40,32 @@ Munshi only claims actions that Paytm actually controls. For example, a UPI reve
 - **Three layers of safety.** A lease stops duplicate work, a fencing epoch rejects stale writers, and idempotency keys protect external side effects.
 - **Unknown is not failure.** If a call times out, a reconciler asks the downstream system what happened instead of guessing.
 - **Autonomy is earned.** New workflows start human-watched, then run alone for read-only work, then for side effects only after many clean runs.
+- **Complexity is earned.** One planner-executor agent first. Specialist agents, multi-hop retrieval, and bigger models are added only when evaluation numbers justify them.
+- **Evaluated per component.** Retrieval, planner, tools, guardrails, and escalation each have their own metrics. Failures found in production become new eval scenarios.
 
 ## Surfaces
 
-| Surface       | Purpose                                                                            |
-| ------------- | ---------------------------------------------------------------------------------- |
-| Customer chat | Report an issue, see honest live status                                            |
-| Munshi Desk   | Live case queue, full trace of what Munshi did and why, takeover and hand-back     |
+| Surface | Purpose |
+|---|---|
+| Customer chat | Report an issue, see honest live status |
+| Munshi Desk | Live case queue, full trace of what Munshi did and why, takeover and hand-back |
 | Ops dashboard | Resolution rate, handling time, escalation reasons, cost per ticket, system health |
-| Admin         | Policy docs, deterministic rules, tool registry, workflow library review           |
+| Admin | Policy docs, deterministic rules, tool registry, workflow library review |
 
 ## Tech stack (proposed)
 
-| Area                                           | Choice                                |
-| ---------------------------------------------- | ------------------------------------- |
-| Language                                       | TypeScript on Node.js                 |
-| Source of truth, queue, timers, vectors        | PostgreSQL with pgvector              |
-| Cache, rate limits, ephemeral realtime fan-out | Redis                                 |
-| Realtime                                       | WebSockets via Socket.io              |
-| Model access                                   | Provider SDKs with schema validation  |
-| Agent graphs inside a step                     | LangGraph, optional                   |
-| LLM tracing, cost, evals                       | Langfuse                              |
-| System metrics and traces                      | OpenTelemetry, Prometheus, Grafana    |
-| Frontend                                       | React                                 |
-| Downstream systems                             | Mock Paytm world with fault injection |
+| Area | Choice |
+|---|---|
+| Language | TypeScript on Node.js |
+| Source of truth, queue, timers, vectors | PostgreSQL with pgvector |
+| Cache, rate limits, ephemeral realtime fan-out | Redis |
+| Realtime | WebSockets via Socket.io |
+| Model access | Provider SDKs with schema validation |
+| Agent graphs inside a step | LangGraph, optional |
+| LLM tracing, cost, evals | Langfuse |
+| System metrics and traces | OpenTelemetry, Prometheus, Grafana |
+| Frontend | React |
+| Downstream systems | Mock Paytm world with fault injection |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the reasoning and the open decisions.
 
@@ -113,6 +115,7 @@ Tracked from the event log, so the dashboard and the audit trail always agree:
 - Cost per ticket, against a stated baseline assumption
 - Customer satisfaction (simulated in the demo)
 - Workflow reuse rate
+- Per-component evals: retrieval precision and recall, groundedness, tool selection accuracy, plan validity, escalation correctness
 
 Targets are pilot targets, to be validated against the eval set and live demo.
 
@@ -122,3 +125,4 @@ Targets are pilot targets, to be validated against the eval set and live demo.
 - Policy documents and timelines in the demo are illustrative and must be replaced with Paytm's real rules.
 - Planner reliability is the main technical risk and is managed with validation, step caps, and an eval set of unseen queries.
 - Exactly-once execution is not claimed. The guarantee is at-least-once execution with idempotent effects.
+- Volume, latency, language, and corpus-size figures in ARCHITECTURE.md are working assumptions, to be replaced with real ones.
