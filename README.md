@@ -45,27 +45,28 @@ Munshi only claims actions that Paytm actually controls. For example, a UPI reve
 
 ## Surfaces
 
-| Surface | Purpose |
-|---|---|
-| Customer chat | Report an issue, see honest live status |
-| Munshi Desk | Live case queue, full trace of what Munshi did and why, takeover and hand-back |
-| Ops dashboard | Resolution rate, handling time, escalation reasons, cost per ticket, system health |
-| Admin | Policy docs, deterministic rules, tool registry, workflow library review |
+| Surface                 | Purpose                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| Customer chat and voice | Report an issue by typing or speaking, see honest live status                      |
+| Munshi Desk             | Live case queue, full trace of what Munshi did and why, takeover and hand-back     |
+| Ops dashboard           | Resolution rate, handling time, escalation reasons, cost per ticket, system health |
+| Admin                   | Policy docs, deterministic rules, tool registry, workflow library review           |
 
 ## Tech stack (proposed)
 
-| Area | Choice |
-|---|---|
-| Language | TypeScript on Node.js |
-| Source of truth, queue, timers, vectors | PostgreSQL with pgvector |
-| Cache, rate limits, ephemeral realtime fan-out | Redis |
-| Realtime | WebSockets via Socket.io |
-| Model access | Provider SDKs with schema validation |
-| Agent graphs inside a step | LangGraph, optional |
-| LLM tracing, cost, evals | Langfuse |
-| System metrics and traces | OpenTelemetry, Prometheus, Grafana |
-| Frontend | React |
-| Downstream systems | Mock Paytm world with fault injection |
+| Area                                           | Choice                                                                              |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Language                                       | TypeScript on Node.js                                                               |
+| Source of truth, queue, timers, vectors        | PostgreSQL with pgvector                                                            |
+| Cache, rate limits, ephemeral realtime fan-out | Redis                                                                               |
+| Realtime                                       | WebSockets via Socket.io                                                            |
+| Model access                                   | Provider SDKs with schema validation                                                |
+| Agent graphs inside a step                     | LangGraph, optional                                                                 |
+| LLM tracing, cost, evals                       | Langfuse                                                                            |
+| System metrics and traces                      | OpenTelemetry, Prometheus, Grafana                                                  |
+| Frontend                                       | React                                                                               |
+| Voice                                          | Sarvam speech-to-text and text-to-speech, streamed through our API from the web app |
+| Downstream systems                             | Mock Paytm world with fault injection                                               |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the reasoning and the open decisions.
 
@@ -103,6 +104,7 @@ To be filled in once the first runnable slice exists. It should cover: required 
 5. **Deadline chasing.** The virtual clock jumps ahead, a bank deadline passes, and Munshi follows up by itself.
 6. **Chaos.** Kill a worker mid-case, time out a downstream call after it executed, replay a duplicate webhook, take the LLM provider down. Show that nothing is duplicated or lost.
 7. **Hostile input.** A message or tool result that tries to give Munshi instructions has no effect.
+8. **Voice.** A customer speaks in mixed Hindi and English, Munshi answers by voice with details on screen, and an interruption stops it mid-sentence.
 
 ## Metrics
 
@@ -115,6 +117,7 @@ Tracked from the event log, so the dashboard and the audit trail always agree:
 - Cost per ticket, against a stated baseline assumption
 - Customer satisfaction (simulated in the demo)
 - Workflow reuse rate
+- Voice, on a small fixed audio set: word error rate, time to first audio
 - Per-component evals: retrieval precision and recall, groundedness, tool selection accuracy, plan validity, escalation correctness
 
 Targets are pilot targets, to be validated against the eval set and live demo.
@@ -125,4 +128,6 @@ Targets are pilot targets, to be validated against the eval set and live demo.
 - Policy documents and timelines in the demo are illustrative and must be replaced with Paytm's real rules.
 - Planner reliability is the main technical risk and is managed with validation, step caps, and an eval set of unseen queries.
 - Exactly-once execution is not claimed. The guarantee is at-least-once execution with idempotent effects.
+- Voice uses paid credits, so evals and load tests run on text or a small fixed audio set.
 - Volume, latency, language, and corpus-size figures in ARCHITECTURE.md are working assumptions, to be replaced with real ones.
+
