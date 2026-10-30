@@ -7,7 +7,7 @@ This document explains how Munshi is designed and why. It is a design document: 
 1. **LLMs propose, code enforces.** Models classify, plan, reason, and draft. They never execute anything. Deterministic code validates, applies rules, and runs side effects.
 2. **Postgres is the single source of truth.** Workers, caches, and prompts hold no state that matters.
 3. **Cases are event logs.** Nothing is overwritten. Every decision, tool call, and human action is an event.
-4. **Assume everything fails.** Workers die, calls time out, webhooks duplicate. The design makes each of these safe, not rare.
+4. **Handle the common failures.** A worker can die, a call can time out, a webhook can arrive twice. The event log, a short lease, and an idempotency key cover those. Rarer races go to a human instead of getting their own mechanism.
 5. **Own the case until it is closed**, even when the money or decision sits with another party.
 6. **Autonomy is earned**, per workflow, through evidence.
 7. **Claim only what Paytm controls.** No action exists for things the bank or a third party owns.
@@ -27,21 +27,21 @@ Design choices follow from these. The figures are working assumptions, to be rep
 
 Agency is set by the risk of the action, and then earned per workflow (see section 6):
 
-| Risk class | Examples | Autonomy |
-|---|---|---|
-| Read-only | Status lookups, policy retrieval | Autonomous once the workflow reaches level 1 |
-| Low-risk write | Create a ticket, notify the customer, set a follow-up | Guardrail gate on every call; autonomous at level 2 |
+| Risk class     | Examples                                                   | Autonomy                                                              |
+| -------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| Read-only      | Status lookups, policy retrieval                           | Autonomous at level 0, after backend authorization. The customer reply is approved at level 0 and goes out alone at level 1 |
+| Low-risk write | Create a ticket, notify the customer, set a follow-up      | Guardrail gate on every call; autonomous at level 2                   |
 | Money-adjacent | Wallet credit or reversal, filing a dispute for a customer | Guardrails plus risk check; amount thresholds route to human approval |
-| Not available | UPI reversals, partner refunds | No tool exists |
+| Not available  | UPI reversals, partner refunds                             | No tool exists                                                        |
 
 ### Working assumptions
 
-| Bucket | Assumption |
-|---|---|
-| Data | A few hundred versioned policy and FAQ documents for the demo. Mostly English, with Hindi queries expected. Case history comes from the event log. |
-| Inputs | Short messages. Some are about meaning ("my money is stuck"), others contain exact identifiers (transaction IDs, booking references). Usually one policy document is enough to decide. |
-| Operating | Thousands of cases per day as the design target. First acknowledgement within seconds, a status answer within a few seconds. Full resolution can take days because it waits on external parties, so latency targets apply to each step, not to case closure. Traffic spikes are queued, not dropped. |
-| Action risk | As in the table above. |
+| Bucket      | Assumption                                                                                                                                                                                                                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Data        | A few hundred versioned policy and FAQ documents for the demo. Mostly English, with Hindi queries expected. Case history comes from the event log.                                                                                                                                                   |
+| Inputs      | Short messages. Some are about meaning ("my money is stuck"), others contain exact identifiers (transaction IDs, booking references). Usually one policy document is enough to decide.                                                                                                               |
+| Operating   | Thousands of cases per day as the design target. First acknowledgement within seconds, a status answer within a few seconds. Full resolution can take days because it waits on external parties, so latency targets apply to each step, not to case closure. Traffic spikes are queued, not dropped. |
+| Action risk | As in the table above.                                                                                                                                                                                                                                                                               |
 
 If evals show that decisions often need several documents, retrieval gets revisited (section 12).
 
@@ -53,7 +53,7 @@ If evals show that decisions often need several documents, retrieval gets revisi
          +------ API + WebSocket gateway ------+
                           |
                       PostgreSQL
-        (case_events, cases, leases, timers, queue,
+        (case_events, cases, timers,
          tool registry, workflow library, policy vectors)
                           |
         +---------- stateless workers (N replicas) ----------+
@@ -73,13 +73,13 @@ Redis exists for cache, rate limits, and ephemeral realtime fan-out only. Losing
 
 A case is an append-only log plus a small snapshot row.
 
-**cases (snapshot):** status, ownership state, lease owner, lease expiry, epoch, `wake_at`, priority, customer reference.
+**cases (snapshot):** status, ownership state, lease owner, lease expiry, epoch, `wake_at`, priority, customer reference. The lease lives on this row. There is no separate lease table and no job queue.
 
 **case_events (log):** customer messages, agent results, plans, policy decisions, tool calls and results, model outputs, human actions, timer firings, summary refreshes. Each event has a sequence number and an audience tag (customer, desk, internal).
 
-**case_facts (ledger):** structured facts such as IDs, amounts, statuses, deadlines, and promises made to the customer. Facts are verified against system data before they count as true.
+**case_facts (ledger):** structured facts such as IDs, amounts, statuses, deadlines, and promises made to the customer. Amounts and identifiers used in a write come from a system lookup, not from the customer's words or an unverified model guess.
 
-**action_intents:** one row per external side effect, with a deterministic key. States: intended, sent, confirmed, failed, unknown.
+**action_intents:** one row per external side effect, written before the call. The idempotency key is the case id plus the step that caused it. A retry of that step reuses the key. A later genuine repeat, such as a second notification or a second bank chase, is a new step and gets a new key. States: intended, sent, confirmed, failed, unknown.
 
 Other tables: tool registry, workflow library with run outcomes, policy chunks with versions and embeddings, human overrides with reasons and embeddings.
 
@@ -87,15 +87,15 @@ Business metrics are SQL views over events, so the dashboard and the audit trail
 
 ### Ownership states
 
-| State | Lease held | Meaning |
-|---|---|---|
-| AI_ACTIVE | yes | A worker is running a step |
-| WAITING_EXTERNAL | no | Waiting on a bank, partner, or customer; has `wake_at` |
-| PENDING_APPROVAL | no | Waiting on a human decision |
-| HUMAN_OWNED | no | A human took over |
-| CLOSED | no | Done |
+| State            | Lease held | Meaning                                                                           |
+| ---------------- | ---------- | --------------------------------------------------------------------------------- |
+| AI_ACTIVE        | yes        | A worker is running a step                                                        |
+| WAITING_EXTERNAL | no         | Waiting on a bank, partner, or customer; has `wake_at`                            |
+| PENDING_APPROVAL | no         | Waiting on a human decision                                                       |
+| HUMAN_OWNED      | no         | A human took over                                                                 |
+| CLOSED           | no         | Done                                                                              |
 
-A lease is for active work only. Waiting never holds a lease.
+A lease is for active work only. Waiting never holds a lease. A case that is waiting always has a `wake_at`. If a new event arrives while it is waiting, the case is marked runnable again.
 
 ## 5. Case lifecycle and the step loop
 
@@ -114,11 +114,15 @@ The base unit is the **tool**, not the agent. Agents from earlier designs become
 
 Start with **one planner-executor agent** that uses the tool registry. Domain packs are only bundles of tools and policies it draws from.
 
+LangGraph state, including a supervisor graph, lives for one run. There is no checkpointer. Before a side effect, and again when the run finishes, anything that must survive is written to the event log. The next message starts a new run rebuilt from that log (section 12).
+
 Specialist agents (UPI, wallet and KYC, merchant, travel) are added only when evals show one agent is overloaded: too many tools in context, falling tool-selection accuracy, or conflicting policies across domains. Each specialist must earn its place with numbers. When added, specialists run in parallel under the orchestrator, return typed results with citations, and propose actions without executing them.
 
 ### Tool registry
 
 Each tool has a name, a one-line description, typed inputs, typed outputs, a risk level (read, write, money-adjacent), the domain pack it belongs to, and a handler. Handlers for third parties (for example an IRCTC status lookup) sit behind the same interface as internal ones.
+
+A money-adjacent tool is retried only when that downstream dedupes on our key. If it does not, a timeout stays `unknown` and a human decides before any second attempt.
 
 The planner never sees the whole registry. It sees the top matching **tool cards** for the query and domain. Full schemas load only when a step uses a tool.
 
@@ -132,6 +136,7 @@ A plan is a small directed graph of steps. Each step names a registry tool, bind
 - Inputs and outputs type-check
 - Total risk fits what this case and workflow level allow
 - No write step lacks a guardrail gate
+- Amounts and identifiers on a write come from system data
 - No unbounded loops
 
 ### Workflow library
@@ -140,13 +145,22 @@ When a query arrives, retrieve saved workflows by similarity. If one fits, reuse
 
 A workflow is saved or promoted only when the outcome was **correct, compliant, and the customer was satisfied**. Satisfaction alone is not enough, since a customer can like an outcome that broke policy.
 
-| Level | Autonomy |
-|---|---|
-| 0 | Runs with a human watching and approving |
-| 1 | Runs alone for read-only workflows |
-| 2 | Runs alone with side effects, only after many clean runs (threshold to be tuned) |
+| Level | Autonomy                                                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | A new or demoted workflow. A human approves the plan once. Reads run. Writes and the customer reply wait for approval. Not every step is approved |
+| 1     | Read-only workflows, including the reply, run alone. Writes still wait for a human                                                                |
+| 2     | Low-risk writes run alone. Money-adjacent actions still stop for approval above the amount threshold. Every write still passes the guardrail     |
 
-Any bad outcome demotes a workflow.
+Level 0 is for a query that matches no saved workflow. Repeat traffic should hit a workflow that has already left level 0.
+
+Promotion counts consecutive clean runs: correct, compliant, satisfactory, and zero wrong actions.
+
+- Level 0 to 1: 20 consecutive clean runs.
+- Level 1 to 2: 20 further consecutive clean runs that include the write path.
+
+Both numbers are a starting rule, to tune against the eval set. Any bad outcome demotes the workflow. A reused plan is validated again before it runs. If the policy behind it changes, it drops back to level 0 until it is checked again.
+
+Each week, report the share of cases that needed a human approval. It should fall as the library matures. If it does not, workflows are not leaving level 0, and that is the thing to fix.
 
 ## 7. Guardrails
 
@@ -158,6 +172,8 @@ Guardrails are deterministic code plus a risk check. They act at three points:
 
 The risk check returns allow, block, or escalate. It can never approve. The policy engine has the final say on execution. Policy rules live in code and are not dependent on retrieval.
 
+If the system we need to re-check is down, the write does not proceed. The case waits or goes to a human.
+
 Amounts and identifiers always come from system data, never from the customer's words.
 
 ## 8. Tool gateway
@@ -167,24 +183,24 @@ Every side effect passes through one door. In order:
 1. Validate the proposal
 2. Run guardrails and risk
 3. Record the intent
-4. Call with a deterministic idempotency key (case ID plus action) and a timeout
+4. Call with an idempotency key (case id plus step) and a timeout
 5. Record the result
 
 It also provides retries with backoff and jitter, a circuit breaker and bulkhead per downstream system, per-tool rate limits, and PII handling.
 
 **Permissions are enforced here, not in the prompt.** Each tool gets least-privilege access. Any tool that touches customer data is scoped to the authenticated customer or merchant of that case, and a plan cannot widen that scope. Higher-consequence tools sit behind deterministic policy and human approval.
 
-A timeout means **unknown**, never failure.
+A timeout means **unknown**, never failure. We ask the downstream what happened, or a human, before trying that step again. We do not auto-reverse anything.
 
 ## 9. Concurrency and safety
 
 Three layers, each solving a different problem:
 
-| Layer | Protects against |
-|---|---|
-| Lease (Postgres, TTL) | Two workers doing the same work |
-| Fencing epoch | A stale worker overwriting state |
-| Idempotency key | Duplicate external side effects |
+| Layer                 | Protects against                 |
+| --------------------- | -------------------------------- |
+| Lease (Postgres, TTL) | Two workers doing the same work  |
+| Fencing epoch         | A stale worker overwriting state |
+| Idempotency key       | Duplicate external side effects  |
 
 - The lease is claimed with one atomic update. The database clock decides expiry.
 - Renewals check the epoch, so a dead worker cannot revive its lease.
@@ -198,7 +214,7 @@ A fencing epoch cannot stop a stale worker after it has called an external syste
 
 Bank deadlines, SLA timers, and follow-ups are all `wake_at` values on the case. The timer scheduler finds due cases and marks them runnable. Because timers are data in Postgres, deadline chasing survives total restarts.
 
-All deadlines go through a **virtual clock**, so a demo can jump days ahead.
+All deadlines go through a **virtual clock**, so a demo can jump days ahead. Lease expiry uses the database clock, not the virtual clock, so a time jump does not expire a live worker's lease.
 
 ## 11. Reconciler
 
@@ -219,12 +235,20 @@ Detect changed documents (version bump or content hash), re-parse, re-chunk, re-
 
 ### Memory model
 
-| Type | In Munshi | Used |
-|---|---|---|
-| Working | Current case: facts ledger, recent turns, tool observations | Yes |
-| Semantic | Stable customer or merchant facts (account type, KYC status), read from source systems with short caching, not copied as a second truth | Yes |
-| Episodic | Earlier cases and what was done, from the event log, so actions are not repeated and repeat contacts are recognised | Yes |
-| Procedural | Workflow library and human overrides | Yes, and a differentiator |
+| Type       | In Munshi                                                                                                                               | Used                      |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Working    | One graph run: facts ledger, recent turns, tool observations. Discarded when the run ends                                               | Yes, not stored           |
+| Semantic   | Stable customer or merchant facts (account type, KYC status), read from source systems with short caching, not copied as a second truth | Yes                       |
+| Episodic   | Earlier cases and what was done, from the event log, so actions are not repeated and repeat contacts are recognised                     | Yes                       |
+| Procedural | Workflow library and human overrides                                                                                                    | Yes, and a differentiator |
+
+The parent passes a `conversationId`. That id is the case. There is no second conversation store.
+
+A later message on the same conversation starts a new graph run. The context builder loads the current facts, recent events, and the new message for that case. That is conversation continuity. A run that dies halfway is not resumed. The next run reads the log, and any side effect already recorded keeps its idempotency key.
+
+Policy and FAQ retrieval is not customer memory. Customer facts come from backend lookups.
+
+LangGraph's checkpointer is not used. It would be a second copy of case state, and a resume would skip the lease and the tool gateway.
 
 ## 13. Context management
 
@@ -233,7 +257,7 @@ The context window is never the memory. A deterministic **context builder** take
 ### Slots, in priority order
 
 1. **Pinned:** role, output format, hard rules, injection warnings. Never trimmed.
-2. **Facts ledger:** never summarized.
+2. **Facts ledger:** current facts only. History stays in the event log. Never trimmed before colder slots.
 3. **Current input**, plus a "what changed since last run" note after a wake-up.
 4. **Recent turns**, verbatim.
 5. **Warm summary:** rolling narrative from a small model, saved as a versioned event.
@@ -243,14 +267,14 @@ If over budget, drop from the bottom up. If it still does not fit, escalate inst
 
 ### Per call type
 
-| Call | Sees | Skips |
-|---|---|---|
-| Triage | Message, short customer snapshot | Tools, history |
-| Planner | Query, ledger, tool cards, similar workflows, policy, allowed risk | Raw tool outputs |
-| Step runner | The one step, its inputs, needed earlier outputs | Everything else |
-| Reasoning | Ledger, extracted observations, cited policy | Raw payloads |
-| Customer reply | Ledger, decision, tone rules, promises made | Internals |
-| Escalation summary | Ledger, event timeline, recommendation | Raw payloads |
+| Call               | Sees                                                               | Skips            |
+| ------------------ | ------------------------------------------------------------------ | ---------------- |
+| Triage             | Message, short customer snapshot                                   | Tools, history   |
+| Planner            | Query, ledger, tool cards, similar workflows, policy, allowed risk | Raw tool outputs |
+| Step runner        | The one step, its inputs, needed earlier outputs                   | Everything else  |
+| Reasoning          | Ledger, extracted observations, cited policy                       | Raw payloads     |
+| Customer reply     | Ledger, decision, tone rules, promises made                        | Internals        |
+| Escalation summary | Ledger, event timeline, recommendation                             | Raw payloads     |
 
 ### Tool results
 
@@ -279,33 +303,72 @@ Transport is WebSockets (Socket.io proposed), using WebSocket-only transport to 
 - **Collisions:** presence and "composing" indicators are polish. The epoch bump on takeover is the safety guarantee.
 - Typing and presence updates are throttled. Connections per instance are capped.
 
-## 15. Human layer
+## 15. Voice channel
+
+Voice is a channel adapter in the web app. The case, guardrails, and event log are unchanged.
+
+### Flow
+
+1. The customer taps the mic in the authenticated web app. The browser asks for mic permission (HTTPS is required).
+2. The browser streams audio to our API over a dedicated WebSocket. The speech provider's key never reaches the browser.
+3. The API forwards audio to the provider's realtime speech-to-text and receives partial and final transcripts.
+4. A final transcript becomes a normal case event (transcript, detected language, confidence, customer-visible). The usual pipeline runs, exactly as for typed text.
+5. The vetted reply text goes to text-to-speech, and audio streams back to the browser sentence by sentence.
+6. Captions and details appear on screen in sync with the voice.
+
+### Turn handling
+
+A voice session moves through four states: listening, thinking, speaking, interrupted. Client-side voice activity detection together with the provider's end-of-speech detection decides when a turn ends.
+
+**Barge-in:** if the customer speaks while Munshi is talking, the browser stops playback at once and the server cancels the rest of that reply's speech. Browser echo cancellation stops Munshi from hearing itself.
+
+### Rules specific to voice
+
+- Case identity comes from the authenticated session, never from spoken numbers.
+- Spoken identifiers and amounts are read back for confirmation when they matter, and details are shown on screen.
+- Money-adjacent actions need on-screen confirmation. A spoken "yes" is not enough.
+- Transcripts are untrusted data, the same as typed text.
+- Only guardrail-vetted text is spoken. Pre-approved filler phrases, with audio generated once in advance, cover waiting time.
+- Replies are written for speech: short, numbers and dates in speakable form, long IDs shown on screen instead of read aloud.
+- Language is detected per utterance, replies follow the customer's language, the original transcript is stored, and ledger facts stay language-neutral.
+
+### Fallback and limits
+
+- If speech services fail, confidence is low, or the customer prefers it, the session drops to text chat on the same case with no loss of context.
+- Concurrent voice sessions are capped to the provider's rate limit for the plan. Session length and spoken characters per session are capped. A global credit alarm warns before credits run low.
+- Evals, load tests, and CI use text or a small fixed audio set, never live voice, to protect credits.
+
+### Privacy
+
+Store transcripts, not audio, by default. Mask PII before observability export. Show a consent notice before the mic is enabled. The retention rule is still open.
+
+## 16. Human layer
 
 - The Desk reads the event log live.
-- **Takeover** sets ownership to human and bumps the epoch.
+- **Takeover** sets ownership to human and bumps the epoch, so in-flight AI writes fail. Any intent still `unknown` is visible on the case.
 - **Hand-back** appends a note and a new instruction, then makes the case runnable.
 - **Approval** moves the case to PENDING_APPROVAL with no lease. Approving appends an event that wakes it.
 - **Override** stores the reason and embedding. Similar future cases retrieve it as guidance. Overrides guide the model but never change guardrails.
-- Escalation hands over a summary, a recommendation, and the exact thing needed from the human. SLA timers apply to escalations.
+- Escalation hands over a summary, a recommendation, and the exact thing needed from the human. SLA timers apply to escalations. If the model is down, the summary is the facts and the recent events, with no model call.
 
-## 16. Failure handling
+## 17. Failure handling
 
-| Failure | Result |
-|---|---|
-| Worker dies mid-step | Lease expires, another worker resumes from the events |
-| Stale worker wakes late | Its writes are rejected by the epoch check |
-| External call times out | Marked unknown, reconciler checks by key, no duplicate |
-| Duplicate or out-of-order webhook | Deduplicated by event ID, applied by sequence |
-| Redis lost | Cache, rate limits, and ephemeral signals affected; no case data lost |
-| LLM provider down | Fallback provider, then rules-only for simple cases, otherwise escalate with a summary |
-| Downstream system slow | Circuit breaker opens, other work continues, case waits |
-| Planner produces a bad plan | Validator rejects it, retry within a cap, then escalate |
-| Poison case loops | Retry cap, then park and escalate |
-| Human takes over mid-run | Epoch bumps, in-flight AI writes fail |
-| Full restart | Cases, timers, and deadlines resume from Postgres |
-| Replay | Saved model outputs are reused instead of calling the model again |
+| Failure                           | Result                                                                                        |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| Worker dies mid-step              | Lease expires, another worker resumes from the events                                        |
+| Stale worker wakes late           | Its writes are rejected by the epoch check                                                   |
+| External call times out           | Marked unknown, reconciler or a human checks before any retry                                |
+| Duplicate or out-of-order webhook | Deduplicated by event ID, applied by sequence                                                |
+| Redis lost                        | Cache, rate limits, and ephemeral signals affected; no case data lost                        |
+| LLM provider down                 | Fallback provider, then rules-only for simple cases, otherwise escalate with the facts we have |
+| Downstream system slow            | Circuit breaker opens, other work continues, case waits                                      |
+| Planner produces a bad plan       | Validator rejects it, retry within a cap, then escalate                                      |
+| Poison case loops                 | Retry cap, then escalate                                                                     |
+| Human takes over mid-run          | Epoch bumps, in-flight AI writes fail                                                        |
+| Full restart                      | Cases, timers, and deadlines resume from Postgres                                            |
+| Replay                            | Saved model outputs are reused. Tool calls are not run again                                  |
 
-## 17. Scalability
+## 18. Scalability
 
 - Workers are stateless and scale horizontally.
 - The real limit is LLM throughput and cost, not Postgres. Use a global rate limiter, priority queues, and per-tenant fair claiming. Shed load at intake when saturated.
@@ -317,7 +380,7 @@ Transport is WebSockets (Socket.io proposed), using WebSocket-only transport to 
 
 Latency targets apply to each step, not to case closure. Split the budget across context and retrieval, planning (skipped when a saved workflow matches), tool calls, guardrails, and reply composition. Use traces to find the slowest stage and optimize it first. Every dependency has a timeout so one slow system cannot hold a request, and independent read-only tool calls run in parallel. Numeric targets are set from the first traces, and no figure is claimed before it is measured.
 
-## 18. Observability and evaluation
+## 19. Observability and evaluation
 
 Log what happened, evaluate where it fails, and use that to improve the design.
 
@@ -334,23 +397,46 @@ The business audit trail lives in Postgres, so the Desk works even if Langfuse i
 
 Evals must point to something fixable, so each component has its own.
 
-| Component | What can go wrong | Metrics | Method |
-|---|---|---|---|
-| Retrieval | Irrelevant or missing context | Context precision, context recall | Labelled queries, code |
-| Answers and explanations | Ungrounded or wrong claims | Groundedness, citation correctness | LLM judge with rubric |
-| Communication | Unclear, wrong tone, dishonest ETA | Clarity, tone, ETA honesty | LLM judge with rubric |
-| Planner | Invalid, unsafe, or wrong-tool plan | Plan validity, tool selection accuracy, argument accuracy, unseen-query success | Code checks on labelled scenarios |
-| Tools and gateway | Failures and unknown outcomes | Tool success rate, retry rate, unknown-intent rate, time to reconcile | Code, from logs |
-| Guardrails | Missed blocks or false blocks | Wrong-action rate (target zero), false-block rate, injection success (target zero) | Scripted adversarial scenarios |
-| Escalation | Too late or too early | Escalation correctness, missed-escalation rate | Labelled scenarios, human review |
-| Overall | Poor outcomes | Resolution rate, handling time, cost per resolution, repeat-contact rate, CSAT, workflow reuse rate | SQL views over events |
+| Component                | What can go wrong                                | Metrics                                                                                                                                        | Method                            |
+| ------------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| Retrieval                | Irrelevant or missing context                    | Context precision, context recall                                                                                                              | Labelled queries, code            |
+| Answers and explanations | Ungrounded or wrong claims                       | Groundedness, citation correctness                                                                                                             | LLM judge with rubric             |
+| Communication            | Unclear, wrong tone, dishonest ETA               | Clarity, tone, ETA honesty                                                                                                                     | LLM judge with rubric             |
+| Planner                  | Invalid, unsafe, or wrong-tool plan              | Plan validity, tool selection accuracy, argument accuracy, unseen-query success                                                                | Code checks on labelled scenarios |
+| Tools and gateway        | Failures and unknown outcomes                    | Tool success rate, retry rate, unknown-intent rate, time to reconcile                                                                          | Code, from logs                   |
+| Guardrails               | Missed blocks or false blocks                    | Wrong-action rate (target zero), false-block rate, injection success (target zero)                                                             | Scripted adversarial scenarios    |
+| Voice                    | Mis-heard identifiers, slow or interrupted turns | Word error rate on a small Hinglish set including IDs and amounts, intent accuracy after transcription, time to first audio, barge-in handling | Fixed audio set, offline          |
+| Escalation               | Too late or too early                            | Escalation correctness, missed-escalation rate                                                                                                 | Labelled scenarios, human review  |
+| Overall                  | Poor outcomes                                    | Resolution rate, handling time, cost per resolution, repeat-contact rate, CSAT, workflow reuse rate                                            | SQL views over events             |
 
 Objective checks (right tool, valid arguments, schema) use code. Subjective ones (groundedness, tone, helpfulness) use LLM judges with written rubrics, calibrated against human labels on a sample.
+
+### Eval guidelines
+
+An eval case is one labelled scenario, versioned with the dataset. It records:
+
+- The customer message, and the trusted context the parent would pass (customer id, not typed by the customer).
+- The expected intents and the expected agent or tool for each. Multi-intent messages list every intent.
+- Facts the mock backend returns, so the run does not depend on a live system.
+- The expected outcome: reply claims that must be true, tools that must run, tools that must not run, and whether the case should escalate.
+- Tags: easy, ambiguous, unseen, fraud, injection, Hinglish, missing-information, partial-failure.
+
+**How to score.** If a human can write the check as code, do that. Plan validity, tool choice, argument schema, "this tool must not be called," and escalation yes or no are code checks. Groundedness, tone, and ETA honesty use an LLM judge with a written rubric. Calibrate the judge against human labels on a sample before trusting its score. A judge disagreement with a human label is a rubric bug, not a model win.
+
+**A wrong action** is a write or a money-adjacent call that the label says must not happen, or a reply that states a status, amount, or refund the mock backend did not return. Target for wrong actions on the eval set is zero. A polite reply that invents a status is still wrong.
+
+**What the set must contain.** Do not fill it with happy paths. Include ambiguous messages, misspellings, mixed Hindi and English, two intents in one message, missing identifiers, unsupported requests, prompt injection in the message and in a retrieved passage, and fraud or account-compromise signals. Keep a held-out slice of unseen queries that is not used while tuning prompts.
+
+**What gates a change.** A prompt, model, or rule change runs the offline set before it lands. It does not land if wrong-action rate is above zero, if injection succeeds, or if plan validity or tool-selection accuracy drops past the threshold recorded for that dataset version. Thresholds other than the zero targets are set from the first labelled run and then held, not moved to make a change pass. Subjective scores are reported and watched. They block a change only when the rubric marks a groundedness or honesty failure, not on tone alone.
+
+**How this connects to autonomy.** A workflow is not promoted on eval pass alone, and not on customer satisfaction alone. Offline evals gate the change. Online, a new workflow starts at level 0: reads run, and a human approves the plan once plus any write and the customer reply. Promotion still requires the clean-run counts in section 6. Every production failure, human override, and wrong action becomes a new eval case before the workflow can be promoted again. The weekly share of cases that needed approval is the signal that promotion is or is not happening.
+
+**Dataset hygiene.** No real customer PII, OTPs, or payment credentials. Identifiers in the set are fake. The same case always sees the same mock responses. Voice evals use a small fixed audio set, never live calls.
 
 ### Offline and online
 
 - **Offline:** a scripted eval set (easy, ambiguous, fraud signals, angry customers, injection attempts, unseen queries) runs on every prompt, model, or rule change, with thresholds that gate the change.
-- **Online:** live metrics from event views, sampled LLM-judge scoring, new workflows running at level 0 with a human watching, and human override rate as a signal.
+- **Online:** live metrics from event views, sampled LLM-judge scoring, new workflows at level 0 (reads run, writes and the reply approved), human override rate, and the weekly share of cases that needed approval.
 
 Failures found in production become new eval scenarios.
 
@@ -358,7 +444,7 @@ Failures found in production become new eval scenarios.
 
 The mock world injects random latency, timeouts, 500s, duplicate webhooks, out-of-order callbacks, and "succeeded but the response was lost". A load test with scripted concurrent cases reports throughput and p95 handling time.
 
-## 19. Security and privacy
+## 20. Security and privacy
 
 - **Authentication and authorization on every request.** Customer sessions only see their own cases. Desk roles (agent, approver, admin) are enforced on the server.
 - **Least-privilege tools,** scoped to the authenticated customer in the tool gateway (section 8). A tool is available to a plan only if its pack and risk level are allowed for the case.
@@ -368,7 +454,7 @@ The mock world injects random latency, timeouts, 500s, duplicate webhooks, out-o
 - **PII** is masked in prompts, logs, and observability exports.
 - **Audit:** from the event log we can answer who triggered a case, what data was accessed, which tools ran with which arguments, which policy version applied, and who approved a risky action.
 
-## 20. Optimization
+## 21. Optimization
 
 Optimization starts from traces and evals, never guesses. Find the bottleneck first.
 
@@ -378,34 +464,40 @@ Optimization starts from traces and evals, never guesses. Find the bottleneck fi
 - **Quality.** Find where quality is lost (retrieval, planner, tool flow, or model) before changing anything. Move to a stronger model only if the model is the bottleneck.
 - **Failure patterns.** As domains grow, a single agent may carry too many tools and conflicting policies. Then specialist agents behind the orchestrator earn their complexity, with eval numbers as the proof.
 
-## 21. Non-goals
+## 22. Non-goals
 
 - Issuing refunds that belong to a bank or third party
 - Exactly-once execution
 - Autonomous money movement without guardrails and the workflow having earned its level
 - Streaming unvetted model output to customers
+- A dedicated mechanism for every rare race. Common failures are covered; the rest go to a human
 
-## 22. Decision log
+## 23. Decision log
 
-| Topic | Current position | Status |
-|---|---|---|
-| Language | TypeScript everywhere | Open (Python for agent layer is an option) |
-| Queue | Postgres with `SKIP LOCKED`, no separate job table | Proposed |
-| Redis role | Cache, rate limits, ephemeral realtime fan-out | Proposed; BullMQ not used |
-| Realtime transport | WebSockets with Socket.io | Proposed; raw `ws` is the alternative |
-| LangGraph | Optional, only inside a step | Open |
-| LangChain | Not used | Proposed |
-| Facts ledger writer | LLM may propose entries, code verifies against system data | Open |
-| Langfuse hosting | Hosted vs self-hosted | Open |
-| Postgres topology | One instance for the hackathon | Proposed |
-| Workflow promotion thresholds | Number of clean runs per level | To tune with the eval set |
-| Mock fidelity | Mocks must support status lookup by reference | Needs checking against real systems |
-| Policy content | Illustrative in the demo, must reflect Paytm's real rules | Needs real input |
-| Agent topology | Single planner-executor first, specialists only when evals justify | Proposed |
-| Retrieval | Hybrid (vector plus keyword) with reranker, single-hop first | Proposed |
-| Reranker | Hosted model vs small local model | Open |
-| Semantic caching | Generic policy answers only, never case-specific data | Proposed |
-| Policy version per case | Record the version used per decision; whether in-flight cases stay pinned to their starting version | Open |
-| Languages | English and Hindi assumed | Needs checking |
-| Latency targets | Set from first traces | To tune |
-| Monorepo tooling | Turborepo with pnpm workspaces, keep package count small | Proposed |
+| Topic                         | Current position                                                                                                                                                                                                  | Status                                     |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Language                      | TypeScript everywhere                                                                                                                                                                                             | Open (Python for agent layer is an option) |
+| Queue                         | Postgres with `SKIP LOCKED`, no separate job table                                                                                                                                                                | Proposed                                   |
+| Redis role                    | Cache, rate limits, ephemeral realtime fan-out                                                                                                                                                                    | Proposed; BullMQ not used                  |
+| Realtime transport            | WebSockets with Socket.io                                                                                                                                                                                         | Proposed; raw `ws` is the alternative      |
+| LangGraph memory             | One run in memory, no checkpointer. Continuity is the event log, keyed by the parent's conversationId (section 12)                                                                                                | Decided                                    |
+| LangChain                     | Not used                                                                                                                                                                                                          | Proposed                                   |
+| Facts ledger writer           | Code writes facts from tool results. Amounts and IDs are not taken from the model or the customer (section 4)                                                                                                     | Proposed                                   |
+| Langfuse hosting              | Hosted vs self-hosted                                                                                                                                                                                             | Open                                       |
+| Postgres topology             | One instance for the hackathon                                                                                                                                                                                    | Proposed                                   |
+| Workflow promotion thresholds | 20 consecutive clean runs from level 0 to 1, then 20 more on the write path to reach level 2. Starting rule, tune with the eval set (section 6)                                                                   | Proposed                                   |
+| Mock fidelity                 | Mocks must support status lookup by reference                                                                                                                                                                     | Needs checking against real systems        |
+| Policy content                | Illustrative in the demo, must reflect Paytm's real rules                                                                                                                                                         | Needs real input                           |
+| Agent topology                | Single planner-executor first, specialists only when evals justify                                                                                                                                                | Proposed                                   |
+| Retrieval                     | Hybrid (vector plus keyword) with reranker, single-hop first                                                                                                                                                      | Proposed                                   |
+| Reranker                      | Hosted model vs small local model                                                                                                                                                                                 | Open                                       |
+| Semantic caching              | Generic policy answers only, never case-specific data                                                                                                                                                             | Proposed                                   |
+| Policy version per case       | Record which policy version a decision used. A policy change demotes workflows that depend on it (section 6)                                                                                                      | Proposed                                   |
+| Languages                     | English and Hindi assumed                                                                                                                                                                                         | Needs checking                             |
+| Latency targets               | Set from first traces                                                                                                                                                                                             | To tune                                    |
+| Monorepo tooling              | Turborepo with pnpm workspaces, keep package count small                                                                                                                                                          | Proposed                                   |
+| Voice channel                 | In-app voice in the web app, no phone number                                                                                                                                                                      | Decided                                    |
+| Speech provider               | Sarvam for speech-to-text and text-to-speech; verify current model names, language support, and rate limits                                                                                                       | Proposed                                   |
+| Text-to-speech model          | Cheaper older voice vs newer voice                                                                                                                                                                                | Open                                       |
+| Audio transport               | Dedicated WebSocket route vs binary frames over Socket.io                                                                                                                                                         | Open                                       |
+| Audio retention               | Transcripts only by default                                                                                                                                                                                       | Proposed                                   |
