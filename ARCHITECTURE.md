@@ -29,7 +29,7 @@ Agency is set by the risk of the action, and then earned per workflow (see secti
 
 | Risk class     | Examples                                                   | Autonomy                                                              |
 | -------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| Read-only      | Status lookups, policy retrieval                           | Autonomous once the workflow reaches level 1                          |
+| Read-only      | Status lookups, policy retrieval                           | Autonomous at level 0, after backend authorization. The customer reply is approved at level 0 and goes out alone at level 1 |
 | Low-risk write | Create a ticket, notify the customer, set a follow-up      | Guardrail gate on every call; autonomous at level 2                   |
 | Money-adjacent | Wallet credit or reversal, filing a dispute for a customer | Guardrails plus risk check; amount thresholds route to human approval |
 | Not available  | UPI reversals, partner refunds                             | No tool exists                                                        |
@@ -114,7 +114,7 @@ The base unit is the **tool**, not the agent. Agents from earlier designs become
 
 Start with **one planner-executor agent** that uses the tool registry. Domain packs are only bundles of tools and policies it draws from.
 
-If a step uses LangGraph, it runs with no checkpointer. Graph state dies with the step. Anything that must survive is written to the event log, which stays the only memory.
+LangGraph state, including a supervisor graph, lives for one run. There is no checkpointer. Before a side effect, and again when the run finishes, anything that must survive is written to the event log. The next message starts a new run rebuilt from that log (section 12).
 
 Specialist agents (UPI, wallet and KYC, merchant, travel) are added only when evals show one agent is overloaded: too many tools in context, falling tool-selection accuracy, or conflicting policies across domains. Each specialist must earn its place with numbers. When added, specialists run in parallel under the orchestrator, return typed results with citations, and propose actions without executing them.
 
@@ -145,13 +145,22 @@ When a query arrives, retrieve saved workflows by similarity. If one fits, reuse
 
 A workflow is saved or promoted only when the outcome was **correct, compliant, and the customer was satisfied**. Satisfaction alone is not enough, since a customer can like an outcome that broke policy.
 
-| Level | Autonomy                                                                         |
-| ----- | -------------------------------------------------------------------------------- |
-| 0     | Runs with a human watching and approving                                         |
-| 1     | Runs alone for read-only workflows                                               |
-| 2     | Runs alone with side effects, only after many clean runs (threshold to be tuned) |
+| Level | Autonomy                                                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | A new or demoted workflow. A human approves the plan once. Reads run. Writes and the customer reply wait for approval. Not every step is approved |
+| 1     | Read-only workflows, including the reply, run alone. Writes still wait for a human                                                                |
+| 2     | Low-risk writes run alone. Money-adjacent actions still stop for approval above the amount threshold. Every write still passes the guardrail     |
 
-Any bad outcome demotes a workflow. A reused plan is validated again before it runs. If the policy behind it changes, it drops back to level 0 until it is checked again.
+Level 0 is for a query that matches no saved workflow. Repeat traffic should hit a workflow that has already left level 0.
+
+Promotion counts consecutive clean runs: correct, compliant, satisfactory, and zero wrong actions.
+
+- Level 0 to 1: 20 consecutive clean runs.
+- Level 1 to 2: 20 further consecutive clean runs that include the write path.
+
+Both numbers are a starting rule, to tune against the eval set. Any bad outcome demotes the workflow. A reused plan is validated again before it runs. If the policy behind it changes, it drops back to level 0 until it is checked again.
+
+Each week, report the share of cases that needed a human approval. It should fall as the library matures. If it does not, workflows are not leaving level 0, and that is the thing to fix.
 
 ## 7. Guardrails
 
@@ -228,10 +237,18 @@ Detect changed documents (version bump or content hash), re-parse, re-chunk, re-
 
 | Type       | In Munshi                                                                                                                               | Used                      |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| Working    | Current case: facts ledger, recent turns, tool observations                                                                             | Yes                       |
+| Working    | One graph run: facts ledger, recent turns, tool observations. Discarded when the run ends                                               | Yes, not stored           |
 | Semantic   | Stable customer or merchant facts (account type, KYC status), read from source systems with short caching, not copied as a second truth | Yes                       |
 | Episodic   | Earlier cases and what was done, from the event log, so actions are not repeated and repeat contacts are recognised                     | Yes                       |
 | Procedural | Workflow library and human overrides                                                                                                    | Yes, and a differentiator |
+
+The parent passes a `conversationId`. That id is the case. There is no second conversation store.
+
+A later message on the same conversation starts a new graph run. The context builder loads the current facts, recent events, and the new message for that case. That is conversation continuity. A run that dies halfway is not resumed. The next run reads the log, and any side effect already recorded keeps its idempotency key.
+
+Policy and FAQ retrieval is not customer memory. Customer facts come from backend lookups.
+
+LangGraph's checkpointer is not used. It would be a second copy of case state, and a resume would skip the lease and the tool gateway.
 
 ## 13. Context management
 
@@ -394,10 +411,32 @@ Evals must point to something fixable, so each component has its own.
 
 Objective checks (right tool, valid arguments, schema) use code. Subjective ones (groundedness, tone, helpfulness) use LLM judges with written rubrics, calibrated against human labels on a sample.
 
+### Eval guidelines
+
+An eval case is one labelled scenario, versioned with the dataset. It records:
+
+- The customer message, and the trusted context the parent would pass (customer id, not typed by the customer).
+- The expected intents and the expected agent or tool for each. Multi-intent messages list every intent.
+- Facts the mock backend returns, so the run does not depend on a live system.
+- The expected outcome: reply claims that must be true, tools that must run, tools that must not run, and whether the case should escalate.
+- Tags: easy, ambiguous, unseen, fraud, injection, Hinglish, missing-information, partial-failure.
+
+**How to score.** If a human can write the check as code, do that. Plan validity, tool choice, argument schema, "this tool must not be called," and escalation yes or no are code checks. Groundedness, tone, and ETA honesty use an LLM judge with a written rubric. Calibrate the judge against human labels on a sample before trusting its score. A judge disagreement with a human label is a rubric bug, not a model win.
+
+**A wrong action** is a write or a money-adjacent call that the label says must not happen, or a reply that states a status, amount, or refund the mock backend did not return. Target for wrong actions on the eval set is zero. A polite reply that invents a status is still wrong.
+
+**What the set must contain.** Do not fill it with happy paths. Include ambiguous messages, misspellings, mixed Hindi and English, two intents in one message, missing identifiers, unsupported requests, prompt injection in the message and in a retrieved passage, and fraud or account-compromise signals. Keep a held-out slice of unseen queries that is not used while tuning prompts.
+
+**What gates a change.** A prompt, model, or rule change runs the offline set before it lands. It does not land if wrong-action rate is above zero, if injection succeeds, or if plan validity or tool-selection accuracy drops past the threshold recorded for that dataset version. Thresholds other than the zero targets are set from the first labelled run and then held, not moved to make a change pass. Subjective scores are reported and watched. They block a change only when the rubric marks a groundedness or honesty failure, not on tone alone.
+
+**How this connects to autonomy.** A workflow is not promoted on eval pass alone, and not on customer satisfaction alone. Offline evals gate the change. Online, a new workflow starts at level 0: reads run, and a human approves the plan once plus any write and the customer reply. Promotion still requires the clean-run counts in section 6. Every production failure, human override, and wrong action becomes a new eval case before the workflow can be promoted again. The weekly share of cases that needed approval is the signal that promotion is or is not happening.
+
+**Dataset hygiene.** No real customer PII, OTPs, or payment credentials. Identifiers in the set are fake. The same case always sees the same mock responses. Voice evals use a small fixed audio set, never live calls.
+
 ### Offline and online
 
 - **Offline:** a scripted eval set (easy, ambiguous, fraud signals, angry customers, injection attempts, unseen queries) runs on every prompt, model, or rule change, with thresholds that gate the change.
-- **Online:** live metrics from event views, sampled LLM-judge scoring, new workflows running at level 0 with a human watching, and human override rate as a signal.
+- **Online:** live metrics from event views, sampled LLM-judge scoring, new workflows at level 0 (reads run, writes and the reply approved), human override rate, and the weekly share of cases that needed approval.
 
 Failures found in production become new eval scenarios.
 
@@ -441,12 +480,12 @@ Optimization starts from traces and evals, never guesses. Find the bottleneck fi
 | Queue                         | Postgres with `SKIP LOCKED`, no separate job table                                                                                                                                                                | Proposed                                   |
 | Redis role                    | Cache, rate limits, ephemeral realtime fan-out                                                                                                                                                                    | Proposed; BullMQ not used                  |
 | Realtime transport            | WebSockets with Socket.io                                                                                                                                                                                         | Proposed; raw `ws` is the alternative      |
-| LangGraph                     | Optional inside one step, with no checkpointer. Surviving state is an event (section 6)                                                                                                                           | Proposed                                   |
+| LangGraph memory             | One run in memory, no checkpointer. Continuity is the event log, keyed by the parent's conversationId (section 12)                                                                                                | Decided                                    |
 | LangChain                     | Not used                                                                                                                                                                                                          | Proposed                                   |
 | Facts ledger writer           | Code writes facts from tool results. Amounts and IDs are not taken from the model or the customer (section 4)                                                                                                     | Proposed                                   |
 | Langfuse hosting              | Hosted vs self-hosted                                                                                                                                                                                             | Open                                       |
 | Postgres topology             | One instance for the hackathon                                                                                                                                                                                    | Proposed                                   |
-| Workflow promotion thresholds | Number of clean runs per level                                                                                                                                                                                    | To tune with the eval set                  |
+| Workflow promotion thresholds | 20 consecutive clean runs from level 0 to 1, then 20 more on the write path to reach level 2. Starting rule, tune with the eval set (section 6)                                                                   | Proposed                                   |
 | Mock fidelity                 | Mocks must support status lookup by reference                                                                                                                                                                     | Needs checking against real systems        |
 | Policy content                | Illustrative in the demo, must reflect Paytm's real rules                                                                                                                                                         | Needs real input                           |
 | Agent topology                | Single planner-executor first, specialists only when evals justify                                                                                                                                                | Proposed                                   |
