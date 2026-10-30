@@ -363,6 +363,31 @@ Use the following action classes:
                                                         or human approval
   -----------------------------------------------------------------------------
 
+### Earned workflow levels
+
+Autonomy also depends on the saved workflow, not only on the action class. Both gates have to pass. The action class above is the ceiling: a level cannot raise an action past its class. Sensitive and high-impact actions stay human-authorized at every level.
+
+A workflow is a saved plan for one kind of request. A newly composed plan starts at level 0.
+
+| Level | What the workflow may do |
+| ----- | ------------------------ |
+| 0     | A new or demoted workflow. A human approves the plan once. Reads run, because the backend already authorizes them. Writes and the customer reply wait for approval. Not every step is approved |
+| 1     | Read-only workflows, including the reply, run alone. Writes still wait for a human |
+| 2     | Low-risk writes run alone. Every write still passes the guardrail, backend authorization, and an idempotency key. Sensitive actions stay human-authorized |
+
+Level 0 is for a query that matches no saved workflow. Repeat traffic should hit a workflow that has already left level 0.
+
+Promote only on consecutive clean runs: correct, compliant, satisfactory, and zero wrong actions. Satisfaction alone is not enough, because a customer can like an outcome that broke policy.
+
+- Level 0 to 1: 20 consecutive clean runs.
+- Level 1 to 2: 20 further consecutive clean runs that include the write path.
+
+Both numbers are a starting rule, to tune against the eval set. Any bad outcome demotes the workflow. If the policy behind it changes, it drops back to level 0 until it is checked again. A reused plan is validated again before it runs.
+
+Each week, report the share of cases that needed a human approval. It should fall as the library matures. If it does not, workflows are not leaving level 0.
+
+This is the same level model as ARCHITECTURE.md. In this handoff, issuing a refund or moving money stays in the sensitive class, so level 2 does not make those actions automatic.
+
 Additional requirements:
 
 -   The AI must never invent transaction, refund, recharge, or ticket
@@ -426,9 +451,25 @@ Implementation guidance:
 -   Add recursion/step limits and execution timeouts.
 -   Do not create unbounded agent-to-agent loops.
 -   Keep graph nodes focused and testable.
--   Add checkpointing/persistence only after agreeing on the parent
-    application's conversation/session identity and retention
-    requirements.
+-   Do not add a LangGraph checkpointer. See "Memory" below.
+
+### Memory
+
+Agreed with ARCHITECTURE.md. Do not add a second store.
+
+-   The parent's `conversationId` is the case id. Events for that case in
+    PostgreSQL are the only memory that survives a run.
+-   `SupervisorState` is working memory for one graph execution. It is
+    not checkpointed. When the run ends, results that matter are
+    appended as events.
+-   The next customer message starts a new run. Load current facts,
+    recent events, and the new message for that `conversationId` before
+    `classify_intents`. That is conversation continuity.
+-   If a run dies halfway, do not resume the graph. The next run reads
+    the log. A write that was already recorded keeps its idempotency
+    key and is not sent again.
+-   Retrieved policy and FAQ passages are not customer memory. Account
+    and transaction facts come from backend tools.
 
 A possible state shape:
 
@@ -692,7 +733,7 @@ Do not evaluate only on happy-path examples.
   M5          Specialized agent skeletons and mocked tools
   M6          Backend API tool integrations
   M7          PostgreSQL/pgvector knowledge ingestion and retrieval
-  M8          Memory/checkpointing and conversation continuity
+  M8          Conversation continuity: rebuild each run from the event log. No LangGraph checkpointer
   M9          Safety policies, audit events, retries, and observability
   M10         Evaluation suite, integration tests, and handoff documentation
 
