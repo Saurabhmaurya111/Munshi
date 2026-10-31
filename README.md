@@ -108,7 +108,20 @@ npm run redis:ping   # should print PONG
 
 Optional local Docker: `npm run db:up` (Redis) or `npm run db:up:local` (Postgres + Redis). See [infra/README.md](./infra/README.md).
 
-Apps and the mock world are still scaffolded; the rest of the runnable slice lands with the first API/worker milestones.
+### API (B2)
+
+```sh
+npm run dev:api
+# health
+curl -s localhost:3001/health
+# first message (creates a case)
+curl -s -X POST localhost:3001/v1/cases/messages \
+  -H 'content-type: application/json' \
+  -H 'x-customer-id: customer-soham' \
+  -d '{"message":"My IRCTC UPI payment failed","commandId":"cmd-1"}'
+```
+
+Demo auth is the `X-Customer-Id` header (`customer-soham`, `customer-aditya`, `customer-saurabh`). A `customerId` in the body is ignored.
 
 ## Demo scenarios
 
