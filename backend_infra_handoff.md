@@ -254,7 +254,7 @@ The mock world is a package, not a separate deployed product. It has bank, UPI, 
 - Status lookup by the idempotency key, so the reconciler can do its job.
 - Fault injection: added latency, timeout, HTTP 500, duplicate webhook, and "the call succeeded but the response was lost."
 
-Seed a small fixed set of customers and transactions so the eval set and the demo see the same data.
+Seed a small fixed set of customers and transactions so the eval set and the demo see the same data. Those rows live in `mock_*` tables (`infra/postgres/init/003_mock_world.sql`): `mock_customers`, `mock_transactions`, `mock_refunds`, `mock_recharges`, `mock_complaints`. Tools read and write only those tables, always scoped by the session `customer_id`.
 
 ## 11. Observability
 

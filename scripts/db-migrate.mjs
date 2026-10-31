@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * Apply infra/postgres/init/*.sql against DATABASE_URL.
+ * Init scripts are idempotent (IF NOT EXISTS / ON CONFLICT).
  * Resolves the host to an address first so IPv6-only hosts (common on
  * Supabase direct connections) still work when the local resolver is weak.
  */

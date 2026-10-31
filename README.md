@@ -101,12 +101,12 @@ munshi/
 
 ```sh
 cp .env.example .env
-# Set DATABASE_URL to your hosted Postgres (Supabase). Use ?sslmode=require.
-npm run db:up        # Redis (local Docker)
+# Set DATABASE_URL (Supabase) and REDIS_URL (Redis Cloud) in .env
 npm run db:migrate   # apply schema to DATABASE_URL
+npm run redis:ping   # should print PONG
 ```
 
-Optional local Postgres: `npm run db:up:local`. See [infra/README.md](./infra/README.md).
+Optional local Docker: `npm run db:up` (Redis) or `npm run db:up:local` (Postgres + Redis). See [infra/README.md](./infra/README.md).
 
 Apps and the mock world are still scaffolded; the rest of the runnable slice lands with the first API/worker milestones.
 
