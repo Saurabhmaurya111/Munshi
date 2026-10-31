@@ -1,9 +1,12 @@
-import type { Audience } from "@repo/core";
+import { serve } from "@hono/node-server";
+import { createDb } from "@repo/core";
+import { createApp } from "./app.js";
+import { loadEnv } from "./env.js";
 
-/**
- * HTTP and WebSocket gateway.
- * Auth, commands, realtime fan-out. See backend_infra_handoff.md.
- */
-const audiences: Audience[] = ["customer", "desk", "internal"];
+const env = loadEnv();
+const db = createDb(env.databaseUrl);
+const app = createApp(db);
 
-console.log(`munshi api scaffold ready (${audiences.join(", ")})`);
+serve({ fetch: app.fetch, port: env.port }, (info) => {
+  console.log(`munshi api listening on http://localhost:${info.port}`);
+});
