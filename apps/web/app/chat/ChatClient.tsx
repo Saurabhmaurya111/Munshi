@@ -11,9 +11,15 @@ import {
   useEffectEvent,
 } from "react";
 import { Logo } from "../components/Logo";
+import {
+  customerId,
+  getCase,
+  latestAssistantText,
+  postCustomerMessage,
+} from "./api";
 import styles from "./chat.module.css";
 
-type Role = "munshi" | "user";
+type Role = "munshi" | "user" | "system";
 
 type Message = {
   id: string;
@@ -24,33 +30,28 @@ type Message = {
 const STARTER: Message = {
   id: "welcome",
   role: "munshi",
-  text: "Hi — I’m Munshi. Tell me what went wrong with a payment, recharge, or refund, and I’ll take it from understanding to a plan.",
+  text: "Hi — I’m Munshi. Tell me what went wrong with a payment, recharge, or refund. I’ll open a real case, look up mock-world records, and reply from the worker.",
 };
 
 const HINTS = [
-  "My UPI payment failed but money left my account",
-  "IRCTC refund still pending",
-  "Recharge done, balance not updated",
+  "My UPI payment txn_upi_1001 failed yesterday",
+  "IRCTC refund refund_5001 still pending",
+  "Recharge of ₹299 failed last week",
 ];
 
-function replyFor(input: string): string {
-  const q = input.toLowerCase();
-  if (q.includes("upi")) {
-    return "Got it — a UPI debit without a successful merchant credit. I’ll classify this as a payment investigation, pull the transaction trail, and open a dispute follow-up if the bank SLA allows. I won’t claim a refund I can’t issue.\n\nShare the UPI reference (UTR) when you have it.";
-  }
-  if (q.includes("irctc") || q.includes("refund")) {
-    return "I’ll treat this as a partner refund status case. Plan: confirm booking + refund id, read IRCTC status, explain what’s blocking payout, and set a chase timer — without promising a railway-side refund.\n\nDrop the PNR or refund id if you have one.";
-  }
-  if (q.includes("recharge")) {
-    return "Sounds like a recharge fulfillment gap. I’ll verify the operator request, check mock-world fulfillment, and either confirm success, retry safely, or escalate with a full trace.\n\nWhat number was recharged, and about when?";
-  }
-  return "Understood. I’ll triage intent and urgency from what you shared, look for a matching workflow, and compose a plan from available tools if we don’t have one yet.\n\nAny transaction id, amount, or timing you can add will tighten the first pass.";
+const POLL_MS = 700;
+const POLL_TIMEOUT_MS = 45_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function ChatClient() {
   const [messages, setMessages] = useState<Message[]>([STARTER]);
   const [draft, setDraft] = useState("");
-  const [typing, setTyping] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [caseId, setCaseId] = useState<string | undefined>();
+  const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -60,42 +61,82 @@ export function ChatClient() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, typing]);
+  }, [messages, busy]);
 
-  function pushUser(text: string) {
+  async function waitForAssistant(
+    conversationId: string,
+    afterSeq: number,
+  ): Promise<string> {
+    const started = Date.now();
+    while (Date.now() - started < POLL_TIMEOUT_MS) {
+      const snapshot = await getCase(conversationId);
+      const text = latestAssistantText(snapshot.events, afterSeq);
+      if (text) {
+        return text;
+      }
+      await sleep(POLL_MS);
+    }
+    throw new Error(
+      "Timed out waiting for Munshi. Is `npm run dev:worker` running?",
+    );
+  }
+
+  async function pushUser(text: string) {
     const cleaned = text.trim();
-    if (!cleaned || typing) return;
+    if (!cleaned || busy) return;
 
-    const userMessage: Message = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      text: cleaned,
-    };
-    setMessages((prev) => [...prev, userMessage]);
+    setError(null);
+    setBusy(true);
+    setMessages((prev) => [
+      ...prev,
+      { id: `u-${Date.now()}`, role: "user", text: cleaned },
+    ]);
     setDraft("");
-    setTyping(true);
 
-    window.setTimeout(() => {
-      const munshiMessage: Message = {
-        id: `m-${Date.now()}`,
-        role: "munshi",
-        text: replyFor(cleaned),
-      };
-      setMessages((prev) => [...prev, munshiMessage]);
-      setTyping(false);
+    try {
+      const posted = await postCustomerMessage({
+        message: cleaned,
+        caseId,
+        commandId: `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      });
+      setCaseId(posted.conversationId);
+
+      const reply = await waitForAssistant(
+        posted.conversationId,
+        posted.seq,
+      );
+
+      setMessages((prev) => [
+        ...prev,
+        { id: `m-${Date.now()}`, role: "munshi", text: reply },
+      ]);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong talking to Munshi.";
+      setError(message);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `e-${Date.now()}`,
+          role: "system",
+          text: message,
+        },
+      ]);
+    } finally {
+      setBusy(false);
       inputRef.current?.focus();
-    }, 900 + Math.min(1200, cleaned.length * 12));
+    }
   }
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
-    pushUser(draft);
+    void pushUser(draft);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      pushUser(draft);
+      void pushUser(draft);
     }
   }
 
@@ -115,7 +156,7 @@ export function ChatClient() {
             <Logo href="/" size="sm" />
             <p className={styles.status}>
               <span className={styles.dot} aria-hidden="true" />
-              On the case
+              {busy ? "Working the case…" : `On the case · ${customerId()}`}
             </p>
           </div>
         </div>
@@ -147,14 +188,16 @@ export function ChatClient() {
                 className={`${styles.bubble} ${
                   message.role === "munshi"
                     ? styles.bubbleMunshi
-                    : styles.bubbleUser
+                    : message.role === "system"
+                      ? styles.bubbleSystem
+                      : styles.bubbleUser
                 }`}
               >
                 {message.text}
               </div>
             </div>
           ))}
-          {typing ? (
+          {busy ? (
             <div className={styles.bubbleRow}>
               <div className={styles.bubbleAvatar}>
                 <Image
@@ -165,7 +208,7 @@ export function ChatClient() {
                 />
               </div>
               <div className={`${styles.bubble} ${styles.bubbleMunshi}`}>
-                <span className={styles.typing} aria-label="Munshi is typing">
+                <span className={styles.typing} aria-label="Munshi is working">
                   <span />
                   <span />
                   <span />
@@ -178,20 +221,25 @@ export function ChatClient() {
       </div>
 
       <div className={styles.composerWrap}>
-        {messages.length < 3 ? (
+        {messages.length < 3 && !busy ? (
           <div className={styles.hints}>
             {HINTS.map((hint) => (
               <button
                 key={hint}
                 type="button"
                 className={styles.hint}
-                onClick={() => pushUser(hint)}
-                disabled={typing}
+                onClick={() => void pushUser(hint)}
+                disabled={busy}
               >
                 {hint}
               </button>
             ))}
           </div>
+        ) : null}
+        {error && !busy ? (
+          <p className={styles.errorNote}>
+            Start API + worker: `npm run dev:api` and `npm run dev:worker`
+          </p>
         ) : null}
         <form className={styles.composer} onSubmit={onSubmit}>
           <textarea
@@ -203,11 +251,12 @@ export function ChatClient() {
             placeholder="Describe the issue…"
             rows={1}
             aria-label="Message Munshi"
+            disabled={busy}
           />
           <button
             type="submit"
             className={styles.send}
-            disabled={typing || !draft.trim()}
+            disabled={busy || !draft.trim()}
           >
             Send
           </button>

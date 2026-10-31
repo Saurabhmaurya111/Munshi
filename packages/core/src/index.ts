@@ -20,3 +20,10 @@ export {
   listCaseEvents,
 } from "./cases.js";
 export type { AppendCustomerMessageResult } from "./cases.js";
+
+export {
+  appendEventWithEpoch,
+  claimCase,
+  releaseCase,
+} from "./leases.js";
+export type { ClaimResult } from "./leases.js";
