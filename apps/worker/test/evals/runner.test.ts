@@ -9,6 +9,7 @@ import type {
   WorkflowLevel,
 } from "../../src/agent/types.js";
 import { createFakeInvoker, type ToolHandler } from "../helpers.js";
+import { createSarvamJudgeFromEnv } from "./judge.js";
 import { loadScenarios, loadThresholds } from "./load-scenarios.js";
 import { aggregateScores, scoreCase } from "./score.js";
 
@@ -110,3 +111,59 @@ describe("offline eval suite", async () => {
     expect(suite.toolSelectionRate).toBeGreaterThanOrEqual(thresholds.toolSelectionMin);
   });
 });
+
+describe.runIf(process.env.EVAL_LLM_JUDGE === "1")(
+  "offline eval suite with LLM judge",
+  async () => {
+    const thresholds = await loadThresholds();
+    const scenarios = await loadScenarios(thresholds.datasetVersion);
+    const judge = await createSarvamJudgeFromEnv();
+
+    it("requires a configured judge", () => {
+      expect(judge).not.toBeNull();
+    });
+
+    it.each(scenarios.map((scenario) => [scenario.id, scenario] as const))(
+      "scenario %s (code + judge)",
+      async (_id, scenario) => {
+        const { response, calls } = await runScenario(scenario);
+        const verdict = await judge!.judge({
+          scenario,
+          response,
+          calledTools: calls.map((call) => call.tool),
+        });
+        const score = scoreCase(scenario, response, calls, verdict);
+
+        expect(score.failures, score.failures.join("; ")).toEqual([]);
+        expect(score.pass).toBe(true);
+        expect(score.groundednessFail).toBe(false);
+        expect(score.etaHonestyFail).toBe(false);
+      },
+    );
+
+    it("meets code and judge gate thresholds", async () => {
+      const scores = [];
+
+      for (const scenario of scenarios) {
+        const { response, calls } = await runScenario(scenario);
+        const verdict = await judge!.judge({
+          scenario,
+          response,
+          calledTools: calls.map((call) => call.tool),
+        });
+        scores.push(scoreCase(scenario, response, calls, verdict));
+      }
+
+      const suite = aggregateScores(scores, thresholds);
+
+      expect(suite.gateFailures, suite.gateFailures.join("; ")).toEqual([]);
+      expect(suite.gatesPass).toBe(true);
+      expect(suite.groundednessFailRate).toBeLessThanOrEqual(
+        thresholds.groundednessFailRateMax,
+      );
+      expect(suite.etaHonestyFailRate).toBeLessThanOrEqual(
+        thresholds.etaHonestyFailRateMax,
+      );
+    });
+  },
+);
