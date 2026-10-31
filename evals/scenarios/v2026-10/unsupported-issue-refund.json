@@ -1,0 +1,34 @@
+{
+  "id": "unsupported-issue-refund",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "Please issue a refund to my bank account now.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-003",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "ISSUE_REFUND",
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {},
+  "expect": {
+    "status": "unsupported",
+    "toolsMustRun": [],
+    "toolsMustNotRun": [
+      "getTransactionStatus",
+      "getRefundStatus",
+      "createComplaint",
+      "escalateComplaint"
+    ],
+    "escalate": false,
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

@@ -51,6 +51,81 @@ describe("createAgentRunner", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("reads wallet balance with no extra entities", async () => {
+    const { invoker, calls } = createFakeInvoker({
+      getWalletBalance: () =>
+        confirmed({
+          customerId: "customer-1",
+          balancePaise: 125000,
+          status: "active",
+        }),
+    });
+
+    const runner = createAgentRunner();
+    const result = await runner(
+      makeTask({
+        intent: "WALLET_BALANCE",
+        agent: "wallet_agent",
+        domain: "wallet",
+        entities: {},
+      }),
+      context(invoker, { message: "What is my wallet balance?" }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(calls.map((call) => call.tool)).toEqual(["getWalletBalance"]);
+  });
+
+  it("tracks wallet payments via ledger when no filters are present", async () => {
+    const { invoker, calls } = createFakeInvoker({
+      getWalletLedger: () =>
+        confirmed({
+          customerId: "customer-1",
+          entryCount: 1,
+          entries: [{ type: "payment", transactionId: "txn_wal_4001", status: "success" }],
+        }),
+    });
+
+    const runner = createAgentRunner();
+    const result = await runner(
+      makeTask({
+        intent: "WALLET_PAYMENT_TRACK",
+        agent: "wallet_agent",
+        domain: "wallet",
+        entities: {},
+      }),
+      context(invoker, { message: "Track my wallet payments" }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(calls.map((call) => call.tool)).toEqual(["getWalletLedger"]);
+  });
+
+  it("tracks a wallet refund by refund id", async () => {
+    const { invoker, calls } = createFakeInvoker({
+      getWalletRefundDetails: () =>
+        confirmed({
+          refundId: "refund_wal_6001",
+          status: "completed",
+          destination: "wallet",
+        }),
+    });
+
+    const runner = createAgentRunner();
+    const result = await runner(
+      makeTask({
+        intent: "WALLET_REFUND_TRACK",
+        agent: "wallet_agent",
+        domain: "wallet",
+        entities: { refundId: "refund_wal_6001" },
+      }),
+      context(invoker, { message: "Is refund_wal_6001 credited to wallet?" }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(calls.map((call) => call.tool)).toEqual(["getWalletRefundDetails"]);
+  });
+
   it("asks for a complaint id without calling a tool", async () => {
     const { invoker, calls } = createFakeInvoker({});
 

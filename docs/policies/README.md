@@ -21,6 +21,7 @@ Versioned support guidance for retrieval with PostgreSQL and pgvector. These fil
 | `recharge-troubleshooting.md`| `policy-recharge`             | `recharge`|
 | `account-kyc-help.md`        | `policy-account-kyc`          | `account` |
 | `complaint-escalation.md`    | `policy-complaint`            | `complaint`|
+| `wallet-payments.md`         | `policy-wallet-payments`      | `wallet`  |
 | `support-faq.md`             | `policy-support-faq`          | `faq`     |
 
 Use the repository path as `source`, a version such as `2026-10` as `document_version`, and `language = "en"`. Set `effective_from` and `effective_to` when a policy version has a validity window. Keep those values out of the Markdown body so they do not become retrieval text.

@@ -456,6 +456,84 @@ function interpretComplaintWrite(tool: string, row: Row): Interpretation {
   return { kind: "verified", text: describe(id), references: [id] };
 }
 
+function interpretWalletBalance(row: Row): Interpretation {
+  const status = text(row, "status");
+  const balancePaise = count(row, "balancePaise");
+  const balanceRupees = count(row, "balanceRupees");
+  const amount =
+    balancePaise !== undefined
+      ? formatRupees(balancePaise)
+      : balanceRupees !== undefined
+        ? `₹${balanceRupees.toLocaleString("en-IN")}`
+        : undefined;
+
+  if (!status && amount === undefined) {
+    return { kind: "empty" };
+  }
+
+  const parts = [
+    amount ? `Your Paytm wallet balance is ${amount}` : "Your Paytm wallet was checked",
+    status ? `and its status is "${status}"` : undefined,
+  ].filter(Boolean);
+
+  return {
+    kind: "verified",
+    text: `${parts.join(" ")}.`,
+    references: [],
+  };
+}
+
+function interpretWalletPayments(list: Row[]): Interpretation {
+  if (list.length === 0) {
+    return { kind: "empty" };
+  }
+
+  if (list.length === 1) {
+    const row = list[0]!;
+    return {
+      kind: "verified",
+      text: transactionSentence(row),
+      references: references([row]),
+    };
+  }
+
+  const shown = list.slice(0, MAX_LISTED);
+  const lines = shown.map((row) => transactionSentence(row));
+  const more = list.length > shown.length ? ` Showing ${shown.length} of ${list.length}.` : "";
+
+  return {
+    kind: "verified",
+    text: `I found ${list.length} wallet-linked payments.${more} ${lines.join(" ")}`,
+    references: references(shown),
+  };
+}
+
+function interpretWalletLedger(data: unknown): Interpretation {
+  const root = asRow(data);
+  const entries = rows(data, "entries") ?? [];
+
+  if (!root || entries.length === 0) {
+    return { kind: "empty" };
+  }
+
+  const shown = entries.slice(0, MAX_LISTED);
+  const lines = shown.map((row) => {
+    const type = text(row, "type") ?? "entry";
+    const id = idOf(row);
+    const status = text(row, "status");
+    const amount = amountOf(row);
+    return `${type}${id ? ` ${id}` : ""}${amount ? ` for ${amount}` : ""}${
+      status ? ` is ${status}` : ""
+    }`;
+  });
+
+  return {
+    kind: "verified",
+    text: `Here is your recent wallet activity (${entries.length} entries via getWalletLedger): ${lines.join("; ")}.`,
+    references: references(shown),
+  };
+}
+
 export function interpretObservation(
   tool: string,
   data: unknown,
@@ -484,6 +562,20 @@ export function interpretObservation(
       return row ? interpretRecharges([row], message) : { kind: "empty" };
     case "getAccountSupportStatus":
       return row ? interpretAccount(row, message) : { kind: "empty" };
+    case "getWalletBalance":
+      return row ? interpretWalletBalance(row) : { kind: "empty" };
+    case "getWalletPayments":
+      return interpretWalletPayments(rows(data, "payments") ?? []);
+    case "getWalletPaymentStatus":
+      return row
+        ? { kind: "verified", text: transactionSentence(row), references: references([row]) }
+        : { kind: "empty" };
+    case "getWalletRefundStatus":
+      return interpretRefunds(rows(data, "refunds") ?? (row && text(row, "status") ? [row] : []));
+    case "getWalletRefundDetails":
+      return row ? interpretRefunds([row]) : { kind: "empty" };
+    case "getWalletLedger":
+      return interpretWalletLedger(data);
     case "getComplaintStatus":
       return row ? interpretComplaint(row) : { kind: "empty" };
     case "createComplaint":

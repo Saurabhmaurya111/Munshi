@@ -1,0 +1,48 @@
+{
+  "id": "partial-tool-failure",
+  "version": "2026-10",
+  "tags": ["partial-failure"],
+  "input": {
+    "message": "Check my UPI payment and refund status.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-007",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN56789" }
+      },
+      {
+        "intent": "REFUND_STATUS",
+        "entities": { "refundId": "RFD56789" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "success",
+        "transactionId": "TXN56789"
+      }
+    },
+    "getRefundStatus": {
+      "state": "failed",
+      "errorCode": "DOWNSTREAM_5XX",
+      "message": "upstream error"
+    }
+  },
+  "expect": {
+    "status": "partial",
+    "intents": ["UPI_PAYMENT_ISSUE", "REFUND_STATUS"],
+    "toolsMustRun": ["getTransactionStatus", "getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["success"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

@@ -27,3 +27,23 @@ export {
   releaseCase,
 } from "./leases.js";
 export type { ClaimResult } from "./leases.js";
+
+export {
+  DESK_AGENTS,
+  appendHumanMessage,
+  getCaseForDesk,
+  getDeskAgent,
+  handBackCase,
+  listDeskQueue,
+  requestHumanTransfer,
+  takeoverCase,
+  transferCaseToHumanWithEpoch,
+} from "./desk.js";
+export type { DeskAgent, DeskQueueItem, TransferResult } from "./desk.js";
+
+export {
+  getCaseTicket,
+  inferHandoffCategory,
+  raiseHandoffTicket,
+} from "./tickets.js";
+export type { HandoffTicket, HandoffTicketCategory } from "./tickets.js";

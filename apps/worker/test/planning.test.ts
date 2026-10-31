@@ -4,13 +4,16 @@ import type { AgentTask } from "../src/agent/types.js";
 import { makeIntent, makeTask } from "./helpers.js";
 
 describe("planTasks", () => {
-  it("creates stable task ids in registry order", () => {
+  it("creates stable task ids from intent names in registry order", () => {
     const tasks = planTasks([
       makeIntent({ intent: "REFUND_STATUS", agent: "refund_agent", domain: "refund" }),
       makeIntent({ intent: "UPI_PAYMENT_ISSUE" }),
     ]);
 
-    expect(tasks.map((task) => task.taskId)).toEqual(["task-1", "task-2"]);
+    expect(tasks.map((task) => task.taskId)).toEqual([
+      "task-UPI_PAYMENT_ISSUE",
+      "task-REFUND_STATUS",
+    ]);
     expect(tasks.map((task) => task.intent)).toEqual([
       "UPI_PAYMENT_ISSUE",
       "REFUND_STATUS",
@@ -36,7 +39,10 @@ describe("planTasks", () => {
 
     const complaint = tasks.find((task) => task.intent === "COMPLAINT_CREATE");
 
-    expect(complaint?.dependsOn).toEqual(["task-1", "task-2"]);
+    expect(complaint?.dependsOn).toEqual([
+      "task-UPI_PAYMENT_ISSUE",
+      "task-REFUND_STATUS",
+    ]);
   });
 });
 

@@ -102,16 +102,39 @@ export async function getCaseForCustomer(
 
 export async function listCaseEvents(
   db: Db,
-  input: { caseId: string; limit?: number },
+  input: {
+    caseId: string;
+    limit?: number;
+    audience?: Audience | Audience[];
+  },
 ): Promise<CaseEventRow[]> {
   const limit = input.limit ?? 50;
+  const audiences = input.audience
+    ? Array.isArray(input.audience)
+      ? input.audience
+      : [input.audience]
+    : null;
+
+  if (!audiences) {
+    const result = await db.query<EventDbRow>(
+      `SELECT id, case_id, seq, type, audience, payload, created_at
+       FROM case_events
+       WHERE case_id = $1
+       ORDER BY seq ASC
+       LIMIT $2`,
+      [input.caseId, limit],
+    );
+    return result.rows.map(mapEvent);
+  }
+
   const result = await db.query<EventDbRow>(
     `SELECT id, case_id, seq, type, audience, payload, created_at
      FROM case_events
      WHERE case_id = $1
+       AND audience = ANY($2::event_audience[])
      ORDER BY seq ASC
-     LIMIT $2`,
-    [input.caseId, limit],
+     LIMIT $3`,
+    [input.caseId, audiences, limit],
   );
   return result.rows.map(mapEvent);
 }

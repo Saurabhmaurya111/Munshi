@@ -3,9 +3,16 @@ export type AgentName =
   | "refund_agent"
   | "recharge_agent"
   | "account_agent"
-  | "complaint_agent";
+  | "complaint_agent"
+  | "wallet_agent";
 
-export type Domain = "upi" | "refund" | "recharge" | "account" | "complaint";
+export type Domain =
+  | "upi"
+  | "refund"
+  | "recharge"
+  | "account"
+  | "complaint"
+  | "wallet";
 
 export type ToolRisk = "read" | "write" | "money";
 
@@ -189,6 +196,7 @@ export type SupervisorTaskSummary = {
   summary: string;
   references?: string[];
   citations?: string[];
+  errorCode?: string;
 };
 
 export type SupervisorResponse = {

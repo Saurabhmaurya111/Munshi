@@ -72,6 +72,41 @@ const rechargeLookupSchema = z
     "provide a recharge number, transaction id, amount, or date filter",
   );
 
+const walletPaymentLookupSchema = z
+  .strictObject({
+    transactionId: referenceSchema.optional(),
+    channel: z.enum(["upi", "wallet", "all"]).optional(),
+    ...lookupFilters,
+  })
+  .refine(
+    (value) =>
+      value.transactionId !== undefined ||
+      value.amount !== undefined ||
+      value.relativeDate !== undefined ||
+      value.channel !== undefined,
+    "provide a transaction id, amount, date filter, or channel",
+  );
+
+const walletRefundLookupSchema = z
+  .strictObject({
+    refundId: referenceSchema.optional(),
+    transactionId: referenceSchema.optional(),
+    ...lookupFilters,
+  })
+  .refine(
+    (value) =>
+      value.refundId !== undefined ||
+      value.transactionId !== undefined ||
+      value.amount !== undefined ||
+      value.relativeDate !== undefined,
+    "provide a refund id, transaction id, amount, or date filter",
+  );
+
+const walletLedgerSchema = z.strictObject({
+  relativeDate: relativeDateSchema.optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+});
+
 /** Gateway tool cards. Read tools are executable in B4; writes wait for B5. */
 export const TOOL_CARDS: Record<string, ToolCard> = {
   getTransactions: {
@@ -130,6 +165,50 @@ export const TOOL_CARDS: Record<string, ToolCard> = {
     domainPack: "account",
     inputSchema: z.strictObject({}),
   },
+  getWalletBalance: {
+    name: "getWalletBalance",
+    description: "Read this customer's Paytm wallet balance and wallet status.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: z.strictObject({}),
+  },
+  getWalletPayments: {
+    name: "getWalletPayments",
+    description:
+      "List wallet and wallet-linked UPI payments for this customer matching filters.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: walletPaymentLookupSchema,
+  },
+  getWalletPaymentStatus: {
+    name: "getWalletPaymentStatus",
+    description: "Read the authoritative status of one wallet or wallet-linked payment.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: transactionIdSchema,
+  },
+  getWalletRefundStatus: {
+    name: "getWalletRefundStatus",
+    description: "Read refunds that credit or should credit this customer's Paytm wallet.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: walletRefundLookupSchema,
+  },
+  getWalletRefundDetails: {
+    name: "getWalletRefundDetails",
+    description: "Read details of one wallet-bound refund by refund id.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: z.strictObject({ refundId: referenceSchema }),
+  },
+  getWalletLedger: {
+    name: "getWalletLedger",
+    description:
+      "Read a combined timeline of wallet payments and wallet-bound refunds for this customer.",
+    risk: "read",
+    domainPack: "wallet",
+    inputSchema: walletLedgerSchema,
+  },
   getComplaintStatus: {
     name: "getComplaintStatus",
     description: "Read the status of a complaint.",
@@ -143,7 +222,14 @@ export const TOOL_CARDS: Record<string, ToolCard> = {
     risk: "write",
     domainPack: "complaint",
     inputSchema: z.strictObject({
-      category: z.enum(["upi", "refund", "recharge", "account", "complaint"]),
+      category: z.enum([
+        "upi",
+        "refund",
+        "recharge",
+        "account",
+        "complaint",
+        "wallet",
+      ]),
       summary: z.string().min(1).max(500),
     }),
   },

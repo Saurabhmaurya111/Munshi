@@ -98,5 +98,6 @@ export function toTaskSummaries(results: AgentTaskResult[]): SupervisorTaskSumma
     ...(result.citations && result.citations.length > 0
       ? { citations: result.citations }
       : {}),
+    ...(result.errorCode ? { errorCode: result.errorCode } : {}),
   }));
 }

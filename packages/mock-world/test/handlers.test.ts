@@ -8,7 +8,7 @@ const describeDb = databaseUrl ? describe : describe.skip;
 describeDb("mock-world read handlers", () => {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
-    ssl: databaseUrl!.includes("localhost")
+    ssl: databaseUrl?.includes("localhost")
       ? undefined
       : { rejectUnauthorized: false },
   });
@@ -53,5 +53,72 @@ describeDb("mock-world read handlers", () => {
       args: { amount: 299 },
     });
     expect(recharge.ok).toBe(true);
+  });
+
+  it("creates and escalates a complaint ticket", async () => {
+    const created = await handlers.createComplaint!({
+      customerId: "customer-soham",
+      args: {
+        category: "upi",
+        summary: "Handoff ticket from mock-world test",
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const complaintId = (created.data as { complaintId: string }).complaintId;
+    expect(complaintId).toMatch(/^cmp_/);
+
+    const escalated = await handlers.escalateComplaint!({
+      customerId: "customer-soham",
+      args: {
+        complaintId,
+        reason: "Needs human review",
+      },
+    });
+    expect(escalated.ok).toBe(true);
+    if (!escalated.ok) return;
+    expect(escalated.data).toMatchObject({
+      complaintId,
+      status: "escalated",
+    });
+  });
+
+  it("returns wallet balance, payments, and wallet-bound refunds", async () => {
+    const balance = await handlers.getWalletBalance!({
+      customerId: "customer-soham",
+      args: {},
+    });
+    expect(balance.ok).toBe(true);
+    if (balance.ok) {
+      expect(balance.data).toMatchObject({
+        customerId: "customer-soham",
+        status: "active",
+      });
+    }
+
+    const payment = await handlers.getWalletPaymentStatus!({
+      customerId: "customer-soham",
+      args: { transactionId: "txn_wal_4001" },
+    });
+    expect(payment.ok).toBe(true);
+
+    const walletRefund = await handlers.getWalletRefundDetails!({
+      customerId: "customer-soham",
+      args: { refundId: "refund_wal_6001" },
+    });
+    expect(walletRefund.ok).toBe(true);
+    if (walletRefund.ok) {
+      expect(walletRefund.data).toMatchObject({
+        destination: "wallet",
+        status: "completed",
+      });
+    }
+
+    const ledger = await handlers.getWalletLedger!({
+      customerId: "customer-soham",
+      args: { limit: 10 },
+    });
+    expect(ledger.ok).toBe(true);
   });
 });
