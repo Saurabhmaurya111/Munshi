@@ -2,11 +2,14 @@ import { pathToFileURL } from "node:url";
 import { createDb } from "@repo/core";
 import { loadEnv } from "./env.js";
 import { runWorkerLoop } from "./loop.js";
+import { createWorkerDependencies } from "./runtime.js";
 
 export * from "./agent/index.js";
 export * from "./knowledge/index.js";
 export { runWorkerLoop } from "./loop.js";
 export { loadEnv } from "./env.js";
+export { processClaimedCase } from "./turn.js";
+export { createWorkerDependencies } from "./runtime.js";
 
 function isMainModule(): boolean {
   const entry = process.argv[1];
@@ -21,6 +24,7 @@ function isMainModule(): boolean {
 async function main() {
   const env = loadEnv();
   const db = createDb(env.databaseUrl);
+  const dependencies = createWorkerDependencies(db);
   const abort = new AbortController();
 
   const shutdown = () => abort.abort();
@@ -33,6 +37,7 @@ async function main() {
       workerId: env.workerId,
       leaseMs: env.leaseMs,
       pollMs: env.pollMs,
+      classifier: process.env.SARVAM_API_KEY?.trim() ? "sarvam+rules" : "rules",
     }),
   );
 
@@ -42,6 +47,7 @@ async function main() {
       workerId: env.workerId,
       leaseMs: env.leaseMs,
       pollMs: env.pollMs,
+      dependencies,
       signal: abort.signal,
     });
   } finally {

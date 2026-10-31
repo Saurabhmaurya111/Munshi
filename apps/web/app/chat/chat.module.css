@@ -138,6 +138,20 @@
   border-bottom-right-radius: 0.4rem;
 }
 
+.bubbleSystem {
+  background: color-mix(in srgb, var(--amber) 16%, white);
+  color: var(--navy);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  border-bottom-left-radius: 0.4rem;
+}
+
+.errorNote {
+  max-width: 720px;
+  margin: 0 auto 0.65rem;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--ink) 65%, transparent);
+}
+
 .typing {
   display: inline-flex;
   gap: 0.28rem;

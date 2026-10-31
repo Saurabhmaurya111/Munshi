@@ -123,16 +123,27 @@ curl -s -X POST localhost:3001/v1/cases/messages \
 
 Demo auth is the `X-Customer-Id` header (`customer-soham`, `customer-aditya`, `customer-saurabh`). A `customerId` in the body is ignored.
 
-### Worker (B3)
+### Worker (B3 + agent turn)
 
 ```sh
 npm run dev:worker
-# In another shell, create a message (API above), then the worker claims the case,
-# appends an internal worker_step stub event, and clears runnable.
-# Inspect: GET /v1/cases/:id with x-customer-id (look for type worker_step)
+# Claims a runnable case, runs the supervisor (rule-based classifier by default,
+# or Sarvam chat if SARVAM_API_KEY is set), calls read tools via the gateway,
+# appends assistant_message for the customer.
 ```
 
-Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500).
+Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500), `SARVAM_API_KEY`, `SARVAM_MODEL` (default `sarvam-105b`).
+
+### Web chat (wired)
+
+```sh
+npm run dev:api
+npm run dev:worker
+npm run dev:web
+# Open http://127.0.0.1:3000/chat — messages hit the API and wait for the worker reply.
+```
+
+`NEXT_PUBLIC_API_URL` (default `http://127.0.0.1:3001`), `NEXT_PUBLIC_CUSTOMER_ID` (default `customer-soham`).
 
 ### Tool gateway (B4)
 
