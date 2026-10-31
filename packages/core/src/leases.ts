@@ -1,5 +1,6 @@
 import type { Db } from "./db.js";
 import { withTransaction } from "./db.js";
+import { notifyCaseEvent } from "./notify.js";
 import {
   CoreError,
   type Audience,
@@ -192,6 +193,7 @@ export async function appendEventWithEpoch(
       throw new CoreError("Epoch mismatch; lease lost", "CONFLICT");
     }
 
+    await notifyCaseEvent(client, { caseId: input.caseId, seq: nextSeq });
     return { case: mapCase(updatedCase), event: mapEvent(eventRow) };
   });
 }

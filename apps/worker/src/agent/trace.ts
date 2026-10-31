@@ -12,7 +12,7 @@ import type {
 export type ToolCallTrace = {
   stepId: string;
   tool: string;
-  state: "confirmed" | "failed" | "unknown";
+  state: "confirmed" | "failed" | "unknown" | "pending_approval";
   errorCode?: string;
   durationMs: number;
 };
@@ -102,13 +102,17 @@ export function createTraceRecorder(input: {
         async invoke(call) {
           const begin = now();
           const result = await inner.invoke(call);
+          const errorCode =
+            result.state === "failed" || result.state === "unknown"
+              ? result.errorCode
+              : result.state === "pending_approval"
+                ? "APPROVAL_REQUIRED"
+                : undefined;
           trace.toolCalls.push({
             stepId: call.stepId,
             tool: call.tool,
             state: result.state,
-            ...(result.state !== "confirmed" && result.errorCode
-              ? { errorCode: result.errorCode }
-              : {}),
+            ...(errorCode ? { errorCode } : {}),
             durationMs: now() - begin,
           });
           return result;

@@ -22,4 +22,12 @@ export type ToolHandler = (input: {
   customerId: string;
   args: Record<string, unknown>;
   signal?: AbortSignal;
+  idempotencyKey?: string;
 }) => Promise<HandlerResult>;
+
+export type ToolOutcomeLookup = {
+  state: "confirmed" | "failed" | "unknown";
+  data?: unknown;
+  errorCode?: string;
+  message?: string;
+};

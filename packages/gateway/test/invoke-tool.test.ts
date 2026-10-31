@@ -106,21 +106,36 @@ describeDb("createInvokeTool", () => {
     expect(intent.rows[0]?.state).toBe("unknown");
   });
 
-  it("blocks write tools until B5", async () => {
-    const created = await createCase(db, { customerId: "customer-soham" });
-    const invoke = createInvokeTool({ db });
+  it(
+    "parks write tools for approval at level 0",
+    async () => {
+      const created = await createCase(db, { customerId: "customer-soham" });
+      const invoke = createInvokeTool({ db });
 
-    const result = await invoke.invoke({
-      caseId: created.id,
-      stepId: "task-write:0:createComplaint",
-      tool: "createComplaint",
-      args: { category: "upi", summary: "test" },
-      customerId: "customer-soham",
-    });
+      const result = await invoke.invoke({
+        caseId: created.id,
+        stepId: `task-write-${Date.now()}:0:createComplaint`,
+        tool: "createComplaint",
+        args: { category: "upi", summary: "test" },
+        customerId: "customer-soham",
+        workflowLevel: 0,
+      });
 
-    expect(result).toMatchObject({
-      state: "failed",
-      errorCode: "WRITE_NOT_ALLOWED",
-    });
-  });
+      expect(result.state).toBe("pending_approval");
+      if (result.state !== "pending_approval") return;
+
+      const approved = await invoke.invoke({
+        caseId: created.id,
+        stepId: result.stepId,
+        tool: "createComplaint",
+        args: { category: "upi", summary: "test" },
+        customerId: "customer-soham",
+        executeApproved: true,
+        approvedBy: "approver-1",
+      });
+
+      expect(approved.state).toBe("confirmed");
+    },
+    20_000,
+  );
 });

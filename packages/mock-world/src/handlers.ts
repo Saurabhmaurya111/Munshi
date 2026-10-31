@@ -4,6 +4,7 @@ import {
   throwIfAborted,
   type RelativeDate,
 } from "./filters.js";
+import { recordToolOutcome } from "./outcomes.js";
 import type { HandlerResult, Queryable, ToolHandler } from "./types.js";
 
 type TxnRow = {
@@ -409,7 +410,12 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     return { ok: true, data: mapComplaint(row) };
   };
 
-  const createComplaint: ToolHandler = async ({ customerId, args, signal }) => {
+  const createComplaint: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+    idempotencyKey,
+  }) => {
     throwIfAborted(signal);
     const category = String(args.category ?? "complaint");
     const summary = String(args.summary ?? "").trim();
@@ -443,10 +449,17 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
             message: "Failed to create complaint",
           };
         }
-        return {
-          ok: true,
-          data: { ...mapComplaint(row), status: "created" },
-        };
+        const data = { ...mapComplaint(row), status: "created" };
+        if (idempotencyKey) {
+          await recordToolOutcome(db, {
+            idempotencyKey,
+            tool: "createComplaint",
+            customerId,
+            state: "confirmed",
+            data,
+          });
+        }
+        return { ok: true, data };
       } catch (error) {
         const code =
           error && typeof error === "object" && "code" in error
@@ -468,6 +481,7 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     customerId,
     args,
     signal,
+    idempotencyKey,
   }) => {
     throwIfAborted(signal);
     const complaintId = String(args.complaintId ?? "");
@@ -497,13 +511,24 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     throwIfAborted(signal);
     const row = result.rows[0];
     if (!row) return notFound("complaint");
-    return { ok: true, data: mapComplaint(row) };
+    const data = mapComplaint(row);
+    if (idempotencyKey) {
+      await recordToolOutcome(db, {
+        idempotencyKey,
+        tool: "addComplaintDetails",
+        customerId,
+        state: "confirmed",
+        data,
+      });
+    }
+    return { ok: true, data };
   };
 
   const escalateComplaint: ToolHandler = async ({
     customerId,
     args,
     signal,
+    idempotencyKey,
   }) => {
     throwIfAborted(signal);
     const complaintId = String(args.complaintId ?? "");
@@ -539,7 +564,17 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     throwIfAborted(signal);
     const row = result.rows[0];
     if (!row) return notFound("complaint");
-    return { ok: true, data: mapComplaint(row) };
+    const data = mapComplaint(row);
+    if (idempotencyKey) {
+      await recordToolOutcome(db, {
+        idempotencyKey,
+        tool: "escalateComplaint",
+        customerId,
+        state: "confirmed",
+        data,
+      });
+    }
+    return { ok: true, data };
   };
 
   const getWalletBalance: ToolHandler = async ({ customerId, signal }) => {

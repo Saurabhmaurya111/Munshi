@@ -11,14 +11,19 @@ import {
   type DeskSession,
 } from "../lib/desk-session";
 import {
+  approveDeskItem,
   getDeskCase,
   getDeskMe,
   getDeskQueue,
   handBackCase,
+  listWorkflows,
   postDeskMessage,
+  promoteWorkflow,
+  rejectDeskItem,
   takeoverCase,
   type DeskCaseEvent,
   type DeskQueueItem,
+  type WorkflowStatus,
 } from "./api";
 import styles from "./desk.module.css";
 
@@ -28,9 +33,66 @@ function commandId(prefix: string): string {
 
 function eventText(event: DeskCaseEvent): string | null {
   if (typeof event.payload.text === "string") return event.payload.text;
+  if (typeof event.payload.draftReply === "string") return event.payload.draftReply;
   if (typeof event.payload.summary === "string") return event.payload.summary;
   if (typeof event.payload.note === "string") return event.payload.note;
   return null;
+}
+
+type PendingApproval = {
+  stepId: string;
+  tool: string;
+  draftReply: string | null;
+  workflowName: string | null;
+  workflowLevel: number | null;
+};
+
+function latestPendingApproval(
+  events: DeskCaseEvent[],
+): PendingApproval | null {
+  const ordered = [...events].sort((a, b) => b.seq - a.seq);
+  const closed = new Set<string>();
+  for (const event of ordered) {
+    const stepId =
+      typeof event.payload.stepId === "string" ? event.payload.stepId : null;
+    if (!stepId) continue;
+    if (
+      event.type === "approval_granted" ||
+      event.type === "approval_rejected"
+    ) {
+      closed.add(stepId);
+      continue;
+    }
+    if (event.type === "approval_requested" && !closed.has(stepId)) {
+      return {
+        stepId,
+        tool:
+          typeof event.payload.tool === "string"
+            ? event.payload.tool
+            : "unknown",
+        draftReply:
+          typeof event.payload.draftReply === "string"
+            ? event.payload.draftReply
+            : typeof event.payload.text === "string"
+              ? event.payload.text
+              : null,
+        workflowName:
+          typeof event.payload.workflowName === "string"
+            ? event.payload.workflowName
+            : null,
+        workflowLevel:
+          typeof event.payload.workflowLevel === "number"
+            ? event.payload.workflowLevel
+            : null,
+      };
+    }
+  }
+  return null;
+}
+
+function workflowProgressLabel(workflow: WorkflowStatus): string {
+  if (workflow.nextLevel === null) return "max autonomy";
+  return `${workflow.progress}/${workflow.promotionThreshold} to L${workflow.nextLevel}`;
 }
 
 export function DeskClient() {
@@ -42,6 +104,8 @@ export function DeskClient() {
   const [ownership, setOwnership] = useState<string>("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [promotingName, setPromotingName] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const refreshQueue = useEffectEvent(async () => {
@@ -53,6 +117,14 @@ export function DeskClient() {
     const snapshot = await getDeskCase(caseId);
     setEvents(snapshot.events);
     setOwnership(snapshot.ownership);
+  });
+
+  const refreshWorkflows = useEffectEvent(async () => {
+    try {
+      setWorkflows(await listWorkflows());
+    } catch {
+      // Keep last known status if briefly unavailable.
+    }
   });
 
   useEffect(() => {
@@ -68,6 +140,7 @@ export function DeskClient() {
     async function tick() {
       try {
         await refreshQueue();
+        await refreshWorkflows();
         if (selectedId) {
           await refreshCase(selectedId);
         }
@@ -143,6 +216,45 @@ export function DeskClient() {
     }
   }
 
+  async function onApprove(stepId: string) {
+    if (!selectedId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await approveDeskItem({
+        caseId: selectedId,
+        stepId,
+        commandId: commandId("approve"),
+      });
+      await refreshCase(selectedId);
+      await refreshQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approve failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onReject(stepId: string) {
+    if (!selectedId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rejectDeskItem({
+        caseId: selectedId,
+        stepId,
+        commandId: commandId("reject"),
+        note: "Rejected from desk",
+      });
+      await refreshCase(selectedId);
+      await refreshQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reject failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onHandBack() {
     if (!selectedId) return;
     setBusy(true);
@@ -161,6 +273,26 @@ export function DeskClient() {
       setError(err instanceof Error ? err.message : "Hand-back failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onPromoteWorkflow(name: string) {
+    if (promotingName) return;
+    const current = workflows.find((item) => item.name === name);
+    if (current?.level === 2) return;
+    setPromotingName(name);
+    setError(null);
+    try {
+      const next = await promoteWorkflow(name);
+      setWorkflows((prev) =>
+        prev.map((item) => (item.name === next.name ? next : item)),
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not promote workflow.",
+      );
+    } finally {
+      setPromotingName(null);
     }
   }
 
@@ -235,6 +367,10 @@ export function DeskClient() {
   }
 
   const selected = queue.find((item) => item.conversationId === selectedId);
+  const pending =
+    ownership === "PENDING_APPROVAL" ? latestPendingApproval(events) : null;
+  const canApprove =
+    session?.role === "approver" || session?.role === "admin";
 
   return (
     <div className={styles.shell}>
@@ -257,6 +393,50 @@ export function DeskClient() {
 
       <div className={styles.layout}>
         <aside className={styles.queue}>
+          <div className={styles.workflows}>
+            <div className={styles.queueHead}>
+              <h2>Workflows</h2>
+              <span>{workflows.length}</span>
+            </div>
+            <p className={styles.workflowHint}>
+              Each workflow has its own autonomy level. Promote one at a time.
+            </p>
+            {workflows.length === 0 ? (
+              <p className={styles.muted}>Loading workflows…</p>
+            ) : (
+              <ul className={styles.workflowList}>
+                {workflows.map((item) => (
+                  <li key={item.name} className={styles.workflowRow}>
+                    <div className={styles.workflowMeta}>
+                      <span className={styles.workflowName}>{item.name}</span>
+                      <span className={styles.workflowLevel}>
+                        L{item.level}
+                        <span className={styles.workflowSep} aria-hidden="true">
+                          ·
+                        </span>
+                        {workflowProgressLabel(item)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.promote}
+                      onClick={() => void onPromoteWorkflow(item.name)}
+                      disabled={
+                        promotingName !== null || busy || item.level === 2
+                      }
+                      title={`Promote ${item.name} one level (skips the 20 clean-run rule)`}
+                    >
+                      {promotingName === item.name
+                        ? "…"
+                        : item.level === 2
+                          ? "L2"
+                          : "Promote"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <div className={styles.queueHead}>
             <h2>Queue</h2>
             <span>{queue.length}</span>
@@ -285,6 +465,16 @@ export function DeskClient() {
                         item.escalationSummary ||
                         "Waiting for specialist"}
                     </span>
+                    {item.waitingFor === "approval" &&
+                    item.parkedAtWorkflowLevel !== null ? (
+                      <span className={styles.parkedLevel}>
+                        Parked L{item.parkedAtWorkflowLevel}
+                        {item.currentWorkflowLevel !== null &&
+                        item.currentWorkflowLevel !== item.parkedAtWorkflowLevel
+                          ? ` → now L${item.currentWorkflowLevel}`
+                          : ""}
+                      </span>
+                    ) : null}
                   </button>
                 </li>
               ))}
@@ -313,9 +503,15 @@ export function DeskClient() {
                       ? ` · ${selected.ticketStatus}`
                       : ""}
                   </p>
+                  {selected?.promotionHint ? (
+                    <p className={styles.promotionHint}>
+                      {selected.promotionHint}
+                    </p>
+                  ) : null}
                 </div>
                 <div className={styles.caseActions}>
-                  {ownership !== "HUMAN_OWNED" ? (
+                  {ownership !== "HUMAN_OWNED" &&
+                  ownership !== "PENDING_APPROVAL" ? (
                     <button
                       type="button"
                       className={styles.secondary}
@@ -324,6 +520,26 @@ export function DeskClient() {
                     >
                       Take over
                     </button>
+                  ) : null}
+                  {pending && canApprove ? (
+                    <>
+                      <button
+                        type="button"
+                        className={styles.primary}
+                        disabled={busy}
+                        onClick={() => void onApprove(pending.stepId)}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.secondary}
+                        disabled={busy}
+                        onClick={() => void onReject(pending.stepId)}
+                      >
+                        Reject
+                      </button>
+                    </>
                   ) : null}
                   <button
                     type="button"
@@ -335,6 +551,31 @@ export function DeskClient() {
                   </button>
                 </div>
               </div>
+
+              {pending ? (
+                <div className={styles.summary}>
+                  <h3>Pending approval</h3>
+                  <p>
+                    Tool: {pending.tool}
+                    {pending.workflowName
+                      ? ` · workflow ${pending.workflowName}`
+                      : ""}
+                    {pending.workflowLevel !== null
+                      ? ` · parked L${pending.workflowLevel}`
+                      : ""}
+                  </p>
+                  {pending.draftReply ? (
+                    <p>
+                      <strong>Draft reply:</strong> {pending.draftReply}
+                    </p>
+                  ) : null}
+                  {!canApprove ? (
+                    <p className={styles.muted}>
+                      Sign in as Rahul (approver) or Admin to approve or reject.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               {selected?.escalationSummary ? (
                 <div className={styles.summary}>

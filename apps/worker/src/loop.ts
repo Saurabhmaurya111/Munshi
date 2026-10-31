@@ -1,5 +1,6 @@
-import { claimCase, type Db } from "@repo/core";
+import { claimCase, wakeDueCases, type Db } from "@repo/core";
 import type { SupervisorDependencies } from "./agent/supervisor.js";
+import { reconcileUnknownIntents } from "./reconciler.js";
 import { processClaimedCase } from "./turn.js";
 
 export type WorkerLoopOptions = {
@@ -30,12 +31,48 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Claim loop: claim → supervisor turn (tools) → persist assistant reply. */
+/** Claim loop: timers → reconciler → claim → supervisor turn → persist. */
 export async function runWorkerLoop(options: WorkerLoopOptions): Promise<void> {
   const sleep = options.sleep ?? defaultSleep;
   const { db, workerId, leaseMs, pollMs, dependencies, signal } = options;
 
   while (!signal?.aborted) {
+    try {
+      const woken = await wakeDueCases(db);
+      if (woken.length > 0) {
+        console.info(
+          JSON.stringify({
+            msg: "timer_woke_cases",
+            count: woken.length,
+            caseIds: woken.map((row) => row.id),
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          msg: "timer_tick_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+
+    try {
+      const resolved = await reconcileUnknownIntents(db);
+      if (resolved > 0) {
+        console.info(
+          JSON.stringify({ msg: "reconciler_resolved", count: resolved }),
+        );
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          msg: "reconciler_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+
     const claimed = await claimCase(db, { workerId, leaseMs });
     if (!claimed) {
       try {
@@ -61,6 +98,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions): Promise<void> {
           caseId: result.caseId,
           workerId,
           status: result.status,
+          workflowLevel: result.workflowLevel,
         }),
       );
     } catch (error) {

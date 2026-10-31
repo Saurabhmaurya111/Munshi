@@ -7,6 +7,9 @@ export function createDb(databaseUrl: string): Db {
   return new pg.Pool({
     connectionString: databaseUrl,
     max: 10,
+    // Fail fast on unreachable hosted Postgres instead of hanging the API.
+    connectionTimeoutMillis: 8_000,
+    idleTimeoutMillis: 30_000,
     ssl: databaseUrl.includes("localhost")
       ? undefined
       : { rejectUnauthorized: false },

@@ -9,17 +9,27 @@ export type GuardrailInput = {
   customerId: string;
   args: Record<string, unknown>;
   workflowLevel?: 0 | 1 | 2;
+  /** Desk has approved this specific write for execution. */
+  executeApproved?: boolean;
 };
 
 /**
- * B4: allow all reads. Writes/money escalate/block until B5 approval path exists.
+ * Reads always allow. Money always escalates unless desk-approved.
+ * Low-risk writes allow when desk-approved or workflow level >= 2.
  */
 export function evaluateGuardrail(input: GuardrailInput): RiskDecision {
   if (input.risk === "read") {
     return "allow";
   }
+  if (input.executeApproved) {
+    return "allow";
+  }
   if (input.risk === "money") {
     return "escalate";
   }
-  return "block";
+  if ((input.workflowLevel ?? 0) >= 2) {
+    return "allow";
+  }
+  // Park path still validates the tool; escalate signals approval needed.
+  return "escalate";
 }

@@ -19,11 +19,18 @@ import {
 } from "../lib/session";
 import {
   getCase,
+  getWorkflow,
   isHumanOwned,
+  isPendingApprovalEvent,
+  isTurnResolutionEvent,
+  latestPendingApprovalText,
+  latestWorkflowName,
   nextIncomingReply,
   postCustomerMessage,
   requestHumanTransfer,
+  type WorkflowStatus,
 } from "./api";
+import { connectCustomerSocket, subscribeCase } from "./socket";
 import styles from "./chat.module.css";
 
 type Role = "munshi" | "user" | "system" | "human";
@@ -47,7 +54,10 @@ const HINTS = [
 ];
 
 const POLL_MS = 700;
-const POLL_TIMEOUT_MS = 45_000;
+/** Initial worker reply (or parked-approval notice). */
+const TURN_TIMEOUT_MS = 45_000;
+/** Once parked for desk approval, keep the socket open. */
+const APPROVAL_TIMEOUT_MS = 30 * 60_000;
 const HUMAN_POLL_MS = 1_500;
 
 function sleep(ms: number): Promise<void> {
@@ -65,19 +75,49 @@ export function ChatClient() {
   const [messages, setMessages] = useState<Message[]>([STARTER]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [caseId, setCaseId] = useState<string | undefined>();
   const [ownership, setOwnership] = useState<string>("AI_ACTIVE");
   const [lastSeenSeq, setLastSeenSeq] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowStatus | null>(null);
+  const [activeWorkflowName, setActiveWorkflowName] = useState("default");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastSeenSeqRef = useRef(0);
+  const activeWorkflowNameRef = useRef("default");
 
   const humanMode = isHumanOwned(ownership);
+  const specialistMode = ownership === "HUMAN_OWNED";
 
   useEffect(() => {
     lastSeenSeqRef.current = lastSeenSeq;
   }, [lastSeenSeq]);
+
+  useEffect(() => {
+    activeWorkflowNameRef.current = activeWorkflowName;
+  }, [activeWorkflowName]);
+
+  const refreshWorkflow = useEffectEvent(async (name?: string) => {
+    const target = name?.trim() || activeWorkflowNameRef.current || "default";
+    try {
+      const next = await getWorkflow(target);
+      setActiveWorkflowName(next.name);
+      setWorkflow(next);
+    } catch {
+      // Keep last known status if the API is briefly unavailable.
+    }
+  });
+
+  const syncWorkflowFromEvents = useEffectEvent(
+    async (events: Parameters<typeof latestWorkflowName>[0]) => {
+      const name = latestWorkflowName(events, activeWorkflowNameRef.current);
+      if (name !== activeWorkflowNameRef.current) {
+        setActiveWorkflowName(name);
+      }
+      await refreshWorkflow(name);
+    },
+  );
 
   const scrollToBottom = useEffectEvent(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -91,6 +131,10 @@ export function ChatClient() {
     }
     setSession(current);
     setReady(true);
+    void refreshWorkflow();
+    // Workflow level is shared state — keep it fresh even when this chat is idle.
+    const timer = setInterval(() => void refreshWorkflow(), 15_000);
+    return () => clearInterval(timer);
   }, [router]);
 
   useEffect(() => {
@@ -98,7 +142,13 @@ export function ChatClient() {
   }, [messages, busy]);
 
   useEffect(() => {
-    if (!caseId || !humanMode || busy) return;
+    if (!busy) {
+      void refreshWorkflow();
+    }
+  }, [busy]);
+
+  useEffect(() => {
+    if (!caseId || !specialistMode || busy) return;
 
     let cancelled = false;
 
@@ -136,42 +186,189 @@ export function ChatClient() {
     return () => {
       cancelled = true;
     };
-  }, [caseId, humanMode, busy]);
+  }, [caseId, specialistMode, busy]);
 
   function signOut() {
     clearSession();
     router.replace("/login");
   }
 
-  async function waitForReply(
+  async function waitForTurn(
     conversationId: string,
     afterSeq: number,
-  ): Promise<{ text: string; role: Role; seq: number; ownership: string }> {
-    const started = Date.now();
-    while (Date.now() - started < POLL_TIMEOUT_MS) {
-      const snapshot = await getCase(conversationId);
-      const reply = nextIncomingReply(snapshot.events, afterSeq);
-      if (reply) {
-        return {
-          text: reply.text,
-          role: reply.role,
-          seq: reply.seq,
-          ownership: snapshot.ownership,
-        };
+    onParked: (text: string) => void,
+  ): Promise<{ text: string; seq: number; role: "munshi" | "human" | "system" }> {
+    const socket = connectCustomerSocket();
+    let settled = false;
+    let parked = false;
+    let parkedSeq = afterSeq;
+    let holdingForDesk = false;
+    let deadline = Date.now() + TURN_TIMEOUT_MS;
+    let rejectSocket: ((error: Error) => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const armTimer = () => {
+      if (timer) clearTimeout(timer);
+      const remaining = Math.max(0, deadline - Date.now());
+      timer = setTimeout(() => {
+        if (!settled) rejectSocket?.(new Error("socket_timeout"));
+      }, remaining);
+    };
+
+    const markParked = (text: string, seq: number) => {
+      holdingForDesk = true;
+      if (!parked) {
+        parked = true;
+        parkedSeq = seq;
+        deadline = Date.now() + APPROVAL_TIMEOUT_MS;
+        armTimer();
+        onParked(text);
       }
-      if (isHumanOwned(snapshot.ownership)) {
-        return {
-          text: "I’ve connected you with a support specialist. Stay on this chat — they’ll reply here shortly.",
-          role: "system",
-          seq: snapshot.lastEventSeq,
-          ownership: snapshot.ownership,
-        };
+    };
+
+    const finish = (
+      text: string,
+      seq: number,
+      role: "munshi" | "human" | "system" = "munshi",
+    ) => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+      return { text, seq, role };
+    };
+
+    const resolveFromEvent = (
+      event: {
+        seq: number;
+        type: string;
+        payload: Record<string, unknown>;
+      },
+    ): { text: string; seq: number; role: "munshi" | "human" | "system" } | null => {
+      if (event.seq <= afterSeq) return null;
+
+      if (isPendingApprovalEvent(event as never)) {
+        markParked(String(event.payload.text), event.seq);
+        return null;
       }
-      await sleep(POLL_MS);
+
+      if (holdingForDesk) {
+        // Stay on the line until desk acts — ignore the parked assistant copy.
+        if (event.seq <= parkedSeq) return null;
+        if (event.type === "human_message" && typeof event.payload.text === "string") {
+          return { text: String(event.payload.text), seq: event.seq, role: "human" };
+        }
+        if (
+          event.type === "status" &&
+          event.payload.pendingApproval === false &&
+          typeof event.payload.text === "string"
+        ) {
+          return { text: String(event.payload.text), seq: event.seq, role: "system" };
+        }
+        if (
+          event.type === "assistant_message" &&
+          event.payload.pendingApproval !== true &&
+          typeof event.payload.text === "string"
+        ) {
+          return { text: String(event.payload.text), seq: event.seq, role: "munshi" };
+        }
+        return null;
+      }
+
+      if (isTurnResolutionEvent(event as never)) {
+        const role =
+          event.type === "human_message"
+            ? "human"
+            : event.type === "status"
+              ? "system"
+              : "munshi";
+        return { text: String(event.payload.text), seq: event.seq, role };
+      }
+
+      return null;
+    };
+
+    const viaSocket = new Promise<{
+      text: string;
+      seq: number;
+      role: "munshi" | "human" | "system";
+    }>((resolve, reject) => {
+      rejectSocket = reject;
+      armTimer();
+
+      const stop = subscribeCase(socket, conversationId, afterSeq, (event) => {
+        if (settled) return;
+        const resolved = resolveFromEvent(event);
+        if (!resolved) return;
+        stop();
+        resolve(finish(resolved.text, resolved.seq, resolved.role));
+      });
+
+      socket.on("connect_error", () => {
+        // HTTP poll remains as backup.
+      });
+    });
+
+    const viaPoll = (async () => {
+      while (Date.now() < deadline) {
+        if (settled) throw new Error("settled");
+        const snapshot = await getCase(conversationId);
+
+        if (snapshot.ownership === "PENDING_APPROVAL") {
+          holdingForDesk = true;
+        }
+
+        const flagged = latestPendingApprovalText(snapshot.events, afterSeq);
+        if (flagged) {
+          markParked(flagged.text, flagged.seq);
+        } else if (snapshot.ownership === "PENDING_APPROVAL") {
+          const soft = snapshot.events
+            .filter(
+              (event) =>
+                event.seq > afterSeq &&
+                event.type === "assistant_message" &&
+                typeof event.payload.text === "string",
+            )
+            .at(-1);
+          if (soft) markParked(String(soft.payload.text), soft.seq);
+        }
+
+        const ordered = [...snapshot.events].sort((a, b) => a.seq - b.seq);
+        for (const event of ordered) {
+          if (isPendingApprovalEvent(event) && event.seq > afterSeq) {
+            markParked(String(event.payload.text), event.seq);
+            continue;
+          }
+          const resolved = resolveFromEvent(event);
+          if (resolved) return finish(resolved.text, resolved.seq, resolved.role);
+        }
+
+        if (snapshot.ownership === "HUMAN_OWNED" && !holdingForDesk) {
+          return finish(
+            "I’ve connected you with a support specialist. Stay on this chat — they’ll reply here shortly.",
+            snapshot.lastEventSeq,
+            "system",
+          );
+        }
+        await sleep(POLL_MS);
+      }
+      throw new Error(
+        holdingForDesk
+          ? "Still waiting on desk approval. Keep this tab open, or check back after an approver acts."
+          : "Munshi is taking longer than usual. Please try again in a moment.",
+      );
+    })();
+
+    try {
+      return await Promise.any([viaSocket, viaPoll]);
+    } catch {
+      throw new Error(
+        holdingForDesk
+          ? "Still waiting on desk approval. Keep this tab open, or check back after an approver acts."
+          : "Munshi is taking longer than usual. Please try again in a moment.",
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+      socket.disconnect();
     }
-    throw new Error(
-      "Munshi is taking longer than usual. Please try again in a moment.",
-    );
   }
 
   async function pushUser(text: string) {
@@ -180,6 +377,7 @@ export function ChatClient() {
 
     setError(null);
     setBusy(true);
+    setAwaitingApproval(false);
     setMessages((prev) => [
       ...prev,
       { id: `u-${Date.now()}`, role: "user", text: cleaned },
@@ -197,7 +395,7 @@ export function ChatClient() {
         setOwnership(posted.ownership);
       }
 
-      if (isHumanOwned(posted.ownership)) {
+      if (posted.ownership === "HUMAN_OWNED") {
         setLastSeenSeq(posted.seq);
         setMessages((prev) => [
           ...prev,
@@ -210,12 +408,41 @@ export function ChatClient() {
         return;
       }
 
-      const reply = await waitForReply(posted.conversationId, posted.seq);
+      const reply = await waitForTurn(
+        posted.conversationId,
+        posted.seq,
+        (parkedText) => {
+          setAwaitingApproval(true);
+          setMessages((prev) => {
+            const already = prev.some(
+              (message) =>
+                message.role === "munshi" && message.text === parkedText,
+            );
+            if (already) return prev;
+            return [
+              ...prev,
+              { id: `m-park-${Date.now()}`, role: "munshi", text: parkedText },
+            ];
+          });
+          void getCase(posted.conversationId).then((snapshot) =>
+            syncWorkflowFromEvents(snapshot.events),
+          );
+        },
+      );
+
       setLastSeenSeq(reply.seq);
-      setMessages((prev) => [
-        ...prev,
-        { id: `m-${Date.now()}`, role: reply.role, text: reply.text },
-      ]);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.text === reply.text) return prev;
+        return [
+          ...prev,
+          {
+            id: `m-${Date.now()}`,
+            role: reply.role === "human" ? "human" : reply.role === "system" ? "system" : "munshi",
+            text: reply.text,
+          },
+        ];
+      });
 
       // Re-read ownership after the reply — AI escalate flips the case to Desk
       // just after the assistant_message is written.
@@ -224,6 +451,7 @@ export function ChatClient() {
       if (latest.lastEventSeq > reply.seq) {
         setLastSeenSeq(latest.lastEventSeq);
       }
+      await syncWorkflowFromEvents(latest.events);
     } catch (err) {
       const message =
         err instanceof Error
@@ -240,6 +468,7 @@ export function ChatClient() {
       ]);
     } finally {
       setBusy(false);
+      setAwaitingApproval(false);
       inputRef.current?.focus();
     }
   }
@@ -305,6 +534,22 @@ export function ChatClient() {
     );
   }
 
+  const statusDotClass = awaitingApproval
+    ? styles.dotAmber
+    : specialistMode
+      ? styles.dotHuman
+      : "";
+
+  const statusLabel = awaitingApproval
+    ? "Waiting for desk approval…"
+    : busy
+      ? specialistMode
+        ? "Sending to specialist…"
+        : "Looking into it…"
+      : specialistMode
+        ? "Connected to a support specialist"
+        : `Signed in as ${session.displayName}`;
+
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
@@ -321,16 +566,10 @@ export function ChatClient() {
             <Logo href="/" size="sm" />
             <p className={styles.status}>
               <span
-                className={`${styles.dot} ${humanMode ? styles.dotHuman : ""}`}
+                className={`${styles.dot} ${statusDotClass}`}
                 aria-hidden="true"
               />
-              {busy
-                ? humanMode
-                  ? "Sending to specialist…"
-                  : "Looking into it…"
-                : humanMode
-                  ? "Connected to a support specialist"
-                  : `Signed in as ${session.displayName}`}
+              {statusLabel}
             </p>
           </div>
         </div>
@@ -345,6 +584,27 @@ export function ChatClient() {
               Talk to a human
             </button>
           ) : null}
+          {workflow ? (
+            <div
+              className={styles.workflowChip}
+              title="Workflow autonomy is controlled from Desk"
+            >
+              <span className={styles.workflowLabel}>Workflow</span>
+              <span className={styles.workflowName}>{workflow.name}</span>
+              <span className={styles.workflowSep} aria-hidden="true">
+                ·
+              </span>
+              <span>
+                Level {workflow.level}
+                {workflow.nextLevel !== null
+                  ? ` · ${workflow.progress}/${workflow.promotionThreshold} to L${workflow.nextLevel}`
+                  : " · max autonomy"}
+              </span>
+            </div>
+          ) : null}
+          <Link href="/desk" className={styles.back}>
+            Desk
+          </Link>
           <button type="button" className={styles.switch} onClick={signOut}>
             Switch account
           </button>
@@ -397,22 +657,48 @@ export function ChatClient() {
               </div>
             </div>
           ))}
-          {busy && !humanMode ? (
+          {busy ? (
             <div className={styles.bubbleRow}>
               <div className={styles.bubbleAvatar}>
-                <Image
-                  src="/brand/mascot-hero.png"
-                  alt=""
-                  width={48}
-                  height={48}
-                />
+                {awaitingApproval || specialistMode ? (
+                  <span className={styles.humanMark} aria-hidden="true">
+                    {awaitingApproval ? "…" : "H"}
+                  </span>
+                ) : (
+                  <Image
+                    src="/brand/mascot-hero.png"
+                    alt=""
+                    width={48}
+                    height={48}
+                  />
+                )}
               </div>
-              <div className={`${styles.bubble} ${styles.bubbleMunshi}`}>
-                <span className={styles.typing} aria-label="Munshi is working">
-                  <span />
-                  <span />
-                  <span />
-                </span>
+              <div
+                className={`${styles.bubble} ${
+                  awaitingApproval || specialistMode
+                    ? styles.bubbleSystem
+                    : styles.bubbleMunshi
+                }`}
+              >
+                {awaitingApproval ? (
+                  <span className={styles.waitingNote}>
+                    <span
+                      className={styles.typing}
+                      aria-label="Waiting for desk approval"
+                    >
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    Waiting for desk approval…
+                  </span>
+                ) : (
+                  <span className={styles.typing} aria-label="Munshi is working">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                )}
               </div>
             </div>
           ) : null}
@@ -447,18 +733,20 @@ export function ChatClient() {
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder={
-              humanMode
-                ? "Message your support specialist…"
-                : "Describe your issue…"
+              awaitingApproval
+                ? "Waiting for desk approval…"
+                : specialistMode
+                  ? "Message your support specialist…"
+                  : "Describe your issue…"
             }
             rows={1}
-            aria-label={humanMode ? "Message support" : "Message Munshi"}
-            disabled={busy}
+            aria-label={specialistMode ? "Message support" : "Message Munshi"}
+            disabled={busy || awaitingApproval}
           />
           <button
             type="submit"
             className={styles.send}
-            disabled={busy || !draft.trim()}
+            disabled={busy || awaitingApproval || !draft.trim()}
           >
             Send
           </button>

@@ -184,14 +184,23 @@ describe("runSupervisor", () => {
   it("holds a write at workflow level 0", async () => {
     const deps = dependencies(
       { intents: [{ intent: "COMPLAINT_CREATE", entities: {} }] },
-      { createComplaint: () => confirmed({ complaintId: "CMP12345" }) },
+      {
+        createComplaint: () => ({
+          state: "pending_approval",
+          intentId: "intent-1",
+          stepId: "task-1:0:createComplaint",
+          tool: "createComplaint",
+          message: "needs approval",
+        }),
+      },
       0,
     );
 
     const response = await runSupervisor(request, deps);
 
     expect(response.status).toBe("escalated");
-    expect(deps.calls).toHaveLength(0);
+    expect(deps.calls).toHaveLength(1);
+    expect(deps.calls[0]?.tool).toBe("createComplaint");
   });
 
   it("holds the customer reply at workflow level 0 even when reads succeed", async () => {

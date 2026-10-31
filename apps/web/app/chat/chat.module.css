@@ -55,6 +55,55 @@
   color: color-mix(in srgb, var(--ink) 62%, transparent);
 }
 
+.workflowChip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: min(22rem, 52vw);
+  padding: 0.4rem 0.7rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--navy) 6%, white);
+  border: 1px solid color-mix(in srgb, var(--navy) 12%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--navy);
+}
+
+.workflowLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  opacity: 0.65;
+}
+
+.workflowName {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.workflowSep {
+  opacity: 0.4;
+}
+
+.promote {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: white;
+  background: var(--navy);
+  border: 0;
+  border-radius: 0.65rem;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+.promote:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .dot {
   width: 0.5rem;
   height: 0.5rem;
@@ -66,6 +115,20 @@
 .dotHuman {
   background: var(--amber);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
+.dotAmber {
+  background: var(--amber, #d4a017);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber, #d4a017) 22%, transparent);
+}
+
+.waitingNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
 }
 
 .topActions {

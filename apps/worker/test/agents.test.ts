@@ -148,7 +148,13 @@ describe("createAgentRunner", () => {
 
   it("holds a write for approval before level 2", async () => {
     const { invoker, calls } = createFakeInvoker({
-      createComplaint: () => confirmed({ complaintId: "CMP99999" }),
+      createComplaint: () => ({
+        state: "pending_approval",
+        intentId: "intent-1",
+        stepId: "task-1:0:createComplaint",
+        tool: "createComplaint",
+        message: "needs approval",
+      }),
     });
 
     const runner = createAgentRunner();
@@ -164,7 +170,8 @@ describe("createAgentRunner", () => {
 
     expect(result.status).toBe("escalated");
     expect(result.errorCode).toBe("APPROVAL_REQUIRED");
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.tool).toBe("createComplaint");
   });
 
   it("runs a low-risk write at level 2", async () => {

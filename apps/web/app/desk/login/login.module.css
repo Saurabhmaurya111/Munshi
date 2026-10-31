@@ -1,0 +1,111 @@
+.page {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1.25rem;
+  background:
+    radial-gradient(ellipse 55% 40% at 80% 10%, color-mix(in srgb, var(--amber) 18%, white), transparent 65%),
+    linear-gradient(165deg, #fff8eb 0%, #f7f9fc 48%, #ffffff 100%);
+}
+
+.card {
+  width: min(100%, 400px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  animation: rise-in 500ms ease both;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.2rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--navy);
+  line-height: 1.1;
+}
+
+.copy {
+  margin: 0;
+  color: color-mix(in srgb, var(--ink) 68%, transparent);
+  line-height: 1.45;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--navy);
+}
+
+.input {
+  appearance: none;
+  border: 1.5px solid color-mix(in srgb, var(--navy) 14%, transparent);
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: white;
+  color: var(--ink);
+}
+
+.input:focus {
+  outline: 2px solid color-mix(in srgb, var(--primary) 45%, white);
+  outline-offset: 1px;
+}
+
+.error {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, #dc2626 10%, white);
+  color: #991b1b;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.submit {
+  appearance: none;
+  border: 0;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-weight: 800;
+  background: var(--navy);
+  color: white;
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.hint code {
+  font-size: 0.78rem;
+  background: color-mix(in srgb, var(--amber) 14%, white);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.3rem;
+}
+
+.home {
+  font-weight: 700;
+  color: var(--navy);
+  text-decoration: none;
+  opacity: 0.75;
+}
