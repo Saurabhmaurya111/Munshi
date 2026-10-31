@@ -17,10 +17,12 @@
     "db:logs": "docker compose logs -f redis postgres",
     "db:psql": "docker compose exec postgres psql -U munshi -d munshi",
     "db:reset": "docker compose --profile local-db down -v && docker compose --profile local-db up -d",
-    "db:migrate": "node --env-file=.env scripts/db-migrate.mjs"
+    "db:migrate": "node --env-file=.env scripts/db-migrate.mjs",
+    "redis:ping": "node --env-file=.env scripts/redis-ping.mjs"
   },
   "devDependencies": {
     "prettier": "3.9.6",
+    "redis": "^5.12.1",
     "turbo": "^2.11.10",
     "typescript": "7.0.2"
   },
