@@ -1,10 +1,22 @@
-/** Case log, leases, epochs, and ownership state. See backend_infra_handoff.md. */
+export type {
+  Audience,
+  CaseEventRow,
+  CaseRow,
+  MockCustomer,
+  OwnershipState,
+} from "./types.js";
+export { CoreError } from "./types.js";
 
-export type OwnershipState =
-  | "AI_ACTIVE"
-  | "WAITING_EXTERNAL"
-  | "PENDING_APPROVAL"
-  | "HUMAN_OWNED"
-  | "CLOSED";
+export { checkDb, createDb, withTransaction } from "./db.js";
+export type { Db, DbClient } from "./db.js";
 
-export type Audience = "customer" | "desk" | "internal";
+export { getMockCustomer } from "./customers.js";
+
+export {
+  appendCustomerMessage,
+  createCase,
+  createCaseAndAppendMessage,
+  getCaseForCustomer,
+  listCaseEvents,
+} from "./cases.js";
+export type { AppendCustomerMessageResult } from "./cases.js";
