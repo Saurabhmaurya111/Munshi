@@ -63,15 +63,34 @@
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--teal) 22%, transparent);
 }
 
-.back {
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.back,
+.switch {
   font-weight: 700;
   color: var(--navy);
   text-decoration: none;
   opacity: 0.8;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
 }
 
-.back:hover {
+.back:hover,
+.switch:hover {
   opacity: 1;
+}
+
+.loading {
+  margin: auto;
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+  font-weight: 600;
 }
 
 .thread {

@@ -18,7 +18,7 @@ export default function Home() {
             answers once and disappears.
           </p>
           <div className={styles.ctaRow}>
-            <Link href="/chat" className={styles.primaryCta}>
+            <Link href="/login" className={styles.primaryCta}>
               Talk to Munshi
             </Link>
             <Link href="/#how" className={styles.ghostCta}>
@@ -40,7 +40,7 @@ export default function Home() {
 
       <section className={styles.mission} aria-labelledby="mission-title">
         <div className={styles.missionInner}>
-          <p className={styles.eyebrow}>Brand mission</p>
+          <p className={styles.eyebrow}>Why Munshi</p>
           <h2 id="mission-title" className={styles.missionTitle}>
             Not just a bot. An autonomous teammate.
           </h2>
@@ -72,7 +72,7 @@ export default function Home() {
               trail for humans when needed.
             </p>
           </div>
-          <Link href="/chat" className={styles.inviteCta}>
+          <Link href="/login" className={styles.inviteCta}>
             Open chat
           </Link>
         </div>

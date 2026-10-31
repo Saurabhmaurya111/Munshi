@@ -4,6 +4,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --filter=api --filter=worker --filter=web",
+    "dev:stack": "npm run dev",
     "dev:api": "turbo run dev --filter=api",
     "dev:worker": "turbo run dev --filter=worker",
     "dev:web": "turbo run dev --filter=web",

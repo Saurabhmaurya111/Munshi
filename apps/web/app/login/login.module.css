@@ -1,0 +1,134 @@
+.page {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1.25rem;
+  background:
+    radial-gradient(ellipse 55% 40% at 80% 10%, color-mix(in srgb, var(--primary) 16%, white), transparent 65%),
+    radial-gradient(ellipse 40% 35% at 10% 90%, color-mix(in srgb, var(--teal) 12%, white), transparent 60%),
+    linear-gradient(165deg, #eef4ff 0%, #f7f9fc 50%, #ffffff 100%);
+}
+
+.card {
+  width: min(100%, 420px);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  animation: rise-in 500ms ease both;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.2rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--navy);
+  line-height: 1.1;
+}
+
+.copy {
+  margin: 0;
+  color: color-mix(in srgb, var(--ink) 68%, transparent);
+  line-height: 1.45;
+}
+
+.list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.option {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: 1.5px solid color-mix(in srgb, var(--navy) 12%, transparent);
+  background: #fff;
+  border-radius: 1.1rem;
+  padding: 0.85rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--primary) 18%, white);
+  color: var(--navy);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.05rem;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.option:hover:not(:disabled),
+.option:focus-visible {
+  border-color: var(--primary);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--primary) 14%, transparent);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.option:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  color: var(--navy);
+  font-size: 1.05rem;
+}
+
+.id {
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.error {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #b45309;
+}
+
+.back {
+  margin-top: 0.25rem;
+  font-weight: 700;
+  color: var(--navy);
+  text-decoration: none;
+  opacity: 0.75;
+}
+
+.back:hover {
+  opacity: 1;
+}
