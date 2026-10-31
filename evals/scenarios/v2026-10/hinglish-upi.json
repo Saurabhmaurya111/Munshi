@@ -1,0 +1,40 @@
+{
+  "id": "hinglish-upi",
+  "version": "2026-10",
+  "tags": ["Hinglish"],
+  "input": {
+    "message": "Mera UPI payment TXN78901 fail ho gaya, status check karo.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-010",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN78901" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "failed",
+        "transactionId": "TXN78901"
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["UPI_PAYMENT_ISSUE"],
+    "agents": ["upi_agent"],
+    "toolsMustRun": ["getTransactionStatus"],
+    "toolsMustNotRun": ["createComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["failed"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

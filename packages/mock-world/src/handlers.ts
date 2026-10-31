@@ -57,9 +57,22 @@ type CustomerRow = {
   support_flags: Record<string, unknown>;
 };
 
+type WalletRow = {
+  customer_id: string;
+  balance_paise: string;
+  currency: string;
+  status: string;
+  updated_at: Date;
+};
+
+type WalletRefundRow = RefundRow & {
+  destination: string;
+};
+
 type ComplaintRow = {
   id: string;
   customer_id: string;
+  case_id: string | null;
   category: string;
   status: string;
   summary: string;
@@ -70,6 +83,27 @@ type ComplaintRow = {
   created_at: Date;
   updated_at: Date;
 };
+
+function mapComplaint(row: ComplaintRow) {
+  return {
+    complaintId: row.id,
+    customerId: row.customer_id,
+    caseId: row.case_id,
+    category: row.category,
+    status: row.status,
+    summary: row.summary,
+    details: row.details,
+    relatedTxnId: row.related_txn_id,
+    relatedRefundId: row.related_refund_id,
+    escalatedAt: row.escalated_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function newComplaintId(): string {
+  return `cmp_${Math.random().toString(16).slice(2, 10)}`;
+}
 
 function mapTxn(row: TxnRow) {
   return {
@@ -88,7 +122,12 @@ function mapTxn(row: TxnRow) {
   };
 }
 
-function mapRefund(row: RefundRow) {
+function mapRefund(row: RefundRow | WalletRefundRow) {
+  const destination =
+    "destination" in row && typeof row.destination === "string"
+      ? row.destination
+      : undefined;
+
   return {
     refundId: row.id,
     customerId: row.customer_id,
@@ -98,7 +137,19 @@ function mapRefund(row: RefundRow) {
     status: row.status,
     reason: row.reason,
     expectedBy: row.expected_by,
+    ...(destination ? { destination } : {}),
     createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function mapWallet(row: WalletRow) {
+  return {
+    customerId: row.customer_id,
+    balancePaise: Number(row.balance_paise),
+    balanceRupees: Number(row.balance_paise) / 100,
+    currency: row.currency,
+    status: row.status,
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -356,21 +407,7 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     throwIfAborted(signal);
     const row = result.rows[0];
     if (!row) return notFound("complaint");
-    return {
-      ok: true,
-      data: {
-        complaintId: row.id,
-        customerId: row.customer_id,
-        category: row.category,
-        status: row.status,
-        summary: row.summary,
-        details: row.details,
-        relatedTxnId: row.related_txn_id,
-        relatedRefundId: row.related_refund_id,
-        createdAt: row.created_at.toISOString(),
-        updatedAt: row.updated_at.toISOString(),
-      },
-    };
+    return { ok: true, data: mapComplaint(row) };
   };
 
   const createComplaint: ToolHandler = async ({
@@ -383,38 +420,61 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     const category = String(args.category ?? "complaint");
     const summary = String(args.summary ?? "").trim();
     if (!summary) {
-      return { ok: false, errorCode: "INVALID_ARGS", message: "summary required" };
+      return {
+        ok: false,
+        errorCode: "BAD_REQUEST",
+        message: "summary is required",
+      };
     }
-    const id = `cmp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const result = await db.query<ComplaintRow>(
-      `INSERT INTO mock_complaints (id, customer_id, category, status, summary)
-       VALUES ($1, $2, $3, 'open', $4)
-       RETURNING *`,
-      [id, customerId, category, summary],
-    );
-    throwIfAborted(signal);
-    const row = result.rows[0];
-    if (!row) {
-      return { ok: false, errorCode: "WRITE_FAILED", message: "Failed to create complaint" };
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      throwIfAborted(signal);
+      const complaintId = newComplaintId();
+      try {
+        const result = await db.query<ComplaintRow>(
+          `INSERT INTO mock_complaints (
+             id, customer_id, category, status, summary, details
+           ) VALUES (
+             $1, $2, $3, 'open'::mock_complaint_status, $4, '[]'::jsonb
+           )
+           RETURNING *`,
+          [complaintId, customerId, category, summary.slice(0, 500)],
+        );
+        throwIfAborted(signal);
+        const row = result.rows[0];
+        if (!row) {
+          return {
+            ok: false,
+            errorCode: "CONFLICT",
+            message: "Failed to create complaint",
+          };
+        }
+        const data = { ...mapComplaint(row), status: "created" };
+        if (idempotencyKey) {
+          await recordToolOutcome(db, {
+            idempotencyKey,
+            tool: "createComplaint",
+            customerId,
+            state: "confirmed",
+            data,
+          });
+        }
+        return { ok: true, data };
+      } catch (error) {
+        const code =
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code: unknown }).code)
+            : "";
+        if (code === "23505") continue;
+        throw error;
+      }
     }
-    const data = {
-      complaintId: row.id,
-      customerId: row.customer_id,
-      category: row.category,
-      status: row.status,
-      summary: row.summary,
-      createdAt: row.created_at.toISOString(),
+
+    return {
+      ok: false,
+      errorCode: "CONFLICT",
+      message: "Failed to allocate complaint id",
     };
-    if (idempotencyKey) {
-      await recordToolOutcome(db, {
-        idempotencyKey,
-        tool: "createComplaint",
-        customerId,
-        state: "confirmed",
-        data,
-      });
-    }
-    return { ok: true, data };
   };
 
   const addComplaintDetails: ToolHandler = async ({
@@ -426,33 +486,32 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     throwIfAborted(signal);
     const complaintId = String(args.complaintId ?? "");
     const details = String(args.details ?? "").trim();
-    const existing = await db.query<ComplaintRow>(
-      `SELECT * FROM mock_complaints
-       WHERE id = $1 AND customer_id = $2
-       LIMIT 1`,
-      [complaintId, customerId],
-    );
-    throwIfAborted(signal);
-    const row = existing.rows[0];
-    if (!row) return notFound("complaint");
+    if (!details) {
+      return {
+        ok: false,
+        errorCode: "BAD_REQUEST",
+        message: "details is required",
+      };
+    }
 
-    const nextDetails = Array.isArray(row.details) ? [...row.details] : [];
-    nextDetails.push({ at: new Date().toISOString(), note: details });
-    const updated = await db.query<ComplaintRow>(
+    const result = await db.query<ComplaintRow>(
       `UPDATE mock_complaints
-       SET details = $3::jsonb, updated_at = now()
+       SET details = COALESCE(details, '[]'::jsonb) || $3::jsonb,
+           updated_at = now()
        WHERE id = $1 AND customer_id = $2
        RETURNING *`,
-      [complaintId, customerId, JSON.stringify(nextDetails)],
+      [
+        complaintId,
+        customerId,
+        JSON.stringify([
+          { at: new Date().toISOString(), note: details.slice(0, 500) },
+        ]),
+      ],
     );
-    const out = updated.rows[0];
-    if (!out) return notFound("complaint");
-    const data = {
-      complaintId: out.id,
-      status: out.status,
-      details: out.details,
-      updatedAt: out.updated_at.toISOString(),
-    };
+    throwIfAborted(signal);
+    const row = result.rows[0];
+    if (!row) return notFound("complaint");
+    const data = mapComplaint(row);
     if (idempotencyKey) {
       await recordToolOutcome(db, {
         idempotencyKey,
@@ -474,28 +533,38 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     throwIfAborted(signal);
     const complaintId = String(args.complaintId ?? "");
     const reason = String(args.reason ?? "").trim();
-    const updated = await db.query<ComplaintRow>(
+    if (!reason) {
+      return {
+        ok: false,
+        errorCode: "BAD_REQUEST",
+        message: "reason is required",
+      };
+    }
+
+    const result = await db.query<ComplaintRow>(
       `UPDATE mock_complaints
-       SET status = 'escalated',
-           details = details || $3::jsonb,
-           escalated_at = now(),
+       SET status = 'escalated'::mock_complaint_status,
+           escalated_at = COALESCE(escalated_at, now()),
+           details = COALESCE(details, '[]'::jsonb) || $3::jsonb,
            updated_at = now()
        WHERE id = $1 AND customer_id = $2
        RETURNING *`,
       [
         complaintId,
         customerId,
-        JSON.stringify([{ at: new Date().toISOString(), note: `escalated: ${reason}` }]),
+        JSON.stringify([
+          {
+            at: new Date().toISOString(),
+            note: reason.slice(0, 500),
+            source: "escalateComplaint",
+          },
+        ]),
       ],
     );
     throwIfAborted(signal);
-    const row = updated.rows[0];
+    const row = result.rows[0];
     if (!row) return notFound("complaint");
-    const data = {
-      complaintId: row.id,
-      status: row.status,
-      escalatedAt: row.escalated_at?.toISOString() ?? null,
-    };
+    const data = mapComplaint(row);
     if (idempotencyKey) {
       await recordToolOutcome(db, {
         idempotencyKey,
@@ -506,6 +575,213 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
       });
     }
     return { ok: true, data };
+  };
+
+  const getWalletBalance: ToolHandler = async ({ customerId, signal }) => {
+    throwIfAborted(signal);
+    const result = await db.query<WalletRow>(
+      `SELECT * FROM mock_wallets WHERE customer_id = $1 LIMIT 1`,
+      [customerId],
+    );
+    throwIfAborted(signal);
+    const row = result.rows[0];
+    if (!row) return notFound("wallet");
+    return { ok: true, data: mapWallet(row) };
+  };
+
+  const getWalletPayments: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+  }) => {
+    throwIfAborted(signal);
+    const clauses = ["customer_id = $1"];
+    const params: unknown[] = [customerId];
+
+    const channel =
+      typeof args.channel === "string" && args.channel !== "all"
+        ? args.channel
+        : null;
+
+    if (channel === "upi" || channel === "wallet") {
+      params.push(channel);
+      clauses.push(`channel = $${params.length}`);
+    } else {
+      clauses.push(`channel IN ('wallet', 'upi')`);
+    }
+
+    if (typeof args.transactionId === "string") {
+      params.push(args.transactionId);
+      clauses.push(`id = $${params.length}`);
+    }
+    if (typeof args.amount === "number") {
+      params.push(amountToPaise(args.amount));
+      clauses.push(`amount_paise = $${params.length}`);
+    }
+    if (typeof args.relativeDate === "string") {
+      const { from, to } = relativeDateRange(args.relativeDate as RelativeDate);
+      params.push(from.toISOString(), to.toISOString());
+      clauses.push(
+        `occurred_at >= $${params.length - 1} AND occurred_at < $${params.length}`,
+      );
+    }
+
+    const result = await db.query<TxnRow>(
+      `SELECT * FROM mock_transactions
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY occurred_at DESC
+       LIMIT 50`,
+      params,
+    );
+    throwIfAborted(signal);
+    return { ok: true, data: { payments: result.rows.map(mapTxn) } };
+  };
+
+  const getWalletPaymentStatus: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+  }) => {
+    throwIfAborted(signal);
+    const transactionId = String(args.transactionId ?? "");
+    const result = await db.query<TxnRow>(
+      `SELECT * FROM mock_transactions
+       WHERE id = $1 AND customer_id = $2
+         AND channel IN ('wallet', 'upi')
+       LIMIT 1`,
+      [transactionId, customerId],
+    );
+    throwIfAborted(signal);
+    const row = result.rows[0];
+    if (!row) return notFound("wallet payment");
+    return { ok: true, data: mapTxn(row) };
+  };
+
+  const getWalletRefundStatus: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+  }) => {
+    throwIfAborted(signal);
+    const clauses = ["customer_id = $1", "destination = 'wallet'"];
+    const params: unknown[] = [customerId];
+
+    if (typeof args.refundId === "string") {
+      params.push(args.refundId);
+      clauses.push(`id = $${params.length}`);
+    }
+    if (typeof args.transactionId === "string") {
+      params.push(args.transactionId);
+      clauses.push(`transaction_id = $${params.length}`);
+    }
+    if (typeof args.amount === "number") {
+      params.push(amountToPaise(args.amount));
+      clauses.push(`amount_paise = $${params.length}`);
+    }
+    if (typeof args.relativeDate === "string") {
+      const { from, to } = relativeDateRange(args.relativeDate as RelativeDate);
+      params.push(from.toISOString(), to.toISOString());
+      clauses.push(
+        `created_at >= $${params.length - 1} AND created_at < $${params.length}`,
+      );
+    }
+
+    const result = await db.query<WalletRefundRow>(
+      `SELECT * FROM mock_refunds
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY created_at DESC
+       LIMIT 20`,
+      params,
+    );
+    throwIfAborted(signal);
+    if (result.rows.length === 0) return notFound("wallet refund");
+    return { ok: true, data: { refunds: result.rows.map(mapRefund) } };
+  };
+
+  const getWalletRefundDetails: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+  }) => {
+    throwIfAborted(signal);
+    const refundId = String(args.refundId ?? "");
+    const result = await db.query<WalletRefundRow>(
+      `SELECT * FROM mock_refunds
+       WHERE id = $1 AND customer_id = $2 AND destination = 'wallet'
+       LIMIT 1`,
+      [refundId, customerId],
+    );
+    throwIfAborted(signal);
+    const row = result.rows[0];
+    if (!row) return notFound("wallet refund");
+    return { ok: true, data: mapRefund(row) };
+  };
+
+  const getWalletLedger: ToolHandler = async ({ customerId, args, signal }) => {
+    throwIfAborted(signal);
+    const limit =
+      typeof args.limit === "number" && Number.isFinite(args.limit)
+        ? Math.min(Math.max(Math.trunc(args.limit), 1), 50)
+        : 30;
+
+    let paymentDateClause = "";
+    let refundDateClause = "";
+    const paymentParams: unknown[] = [customerId];
+    const refundParams: unknown[] = [customerId];
+
+    if (typeof args.relativeDate === "string") {
+      const { from, to } = relativeDateRange(args.relativeDate as RelativeDate);
+      paymentParams.push(from.toISOString(), to.toISOString());
+      refundParams.push(from.toISOString(), to.toISOString());
+      paymentDateClause = `AND occurred_at >= $2 AND occurred_at < $3`;
+      refundDateClause = `AND created_at >= $2 AND created_at < $3`;
+    }
+
+    const payments = await db.query<TxnRow>(
+      `SELECT * FROM mock_transactions
+       WHERE customer_id = $1
+         AND channel IN ('wallet', 'upi')
+         ${paymentDateClause}
+       ORDER BY occurred_at DESC
+       LIMIT ${limit}`,
+      paymentParams,
+    );
+    throwIfAborted(signal);
+
+    const refunds = await db.query<WalletRefundRow>(
+      `SELECT * FROM mock_refunds
+       WHERE customer_id = $1
+         AND destination = 'wallet'
+         ${refundDateClause}
+       ORDER BY created_at DESC
+       LIMIT ${limit}`,
+      refundParams,
+    );
+    throwIfAborted(signal);
+
+    const entries = [
+      ...payments.rows.map((row) => ({
+        type: "payment" as const,
+        at: row.occurred_at.toISOString(),
+        ...mapTxn(row),
+      })),
+      ...refunds.rows.map((row) => ({
+        type: "refund" as const,
+        at: row.created_at.toISOString(),
+        ...mapRefund(row),
+      })),
+    ]
+      .sort((left, right) => right.at.localeCompare(left.at))
+      .slice(0, limit);
+
+    return {
+      ok: true,
+      data: {
+        customerId,
+        entryCount: entries.length,
+        entries,
+      },
+    };
   };
 
   return {
@@ -521,5 +797,11 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     createComplaint,
     addComplaintDetails,
     escalateComplaint,
+    getWalletBalance,
+    getWalletPayments,
+    getWalletPaymentStatus,
+    getWalletRefundStatus,
+    getWalletRefundDetails,
+    getWalletLedger,
   };
 }

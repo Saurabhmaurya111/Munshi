@@ -42,6 +42,31 @@ export const INTENT_REGISTRY: Record<string, IntentDefinition> = {
     requiredEntities: [],
     dependsOnIntents: [],
   },
+  WALLET_BALANCE: {
+    intent: "WALLET_BALANCE",
+    agent: "wallet_agent",
+    domain: "wallet",
+    description: "Check Paytm wallet balance, freeze, or limited-wallet status.",
+    requiredEntities: [],
+    dependsOnIntents: [],
+  },
+  WALLET_PAYMENT_TRACK: {
+    intent: "WALLET_PAYMENT_TRACK",
+    agent: "wallet_agent",
+    domain: "wallet",
+    description:
+      "Track Paytm wallet payments including wallet spends and UPI add-money or wallet-linked UPI.",
+    requiredEntities: [],
+    dependsOnIntents: [],
+  },
+  WALLET_REFUND_TRACK: {
+    intent: "WALLET_REFUND_TRACK",
+    agent: "wallet_agent",
+    domain: "wallet",
+    description: "Track refunds that credit or should credit the Paytm wallet.",
+    requiredEntities: [],
+    dependsOnIntents: [],
+  },
   COMPLAINT_CREATE: {
     intent: "COMPLAINT_CREATE",
     agent: "complaint_agent",
@@ -53,6 +78,9 @@ export const INTENT_REGISTRY: Record<string, IntentDefinition> = {
       "REFUND_STATUS",
       "RECHARGE_ISSUE",
       "ACCOUNT_ISSUE",
+      "WALLET_BALANCE",
+      "WALLET_PAYMENT_TRACK",
+      "WALLET_REFUND_TRACK",
     ],
   },
   COMPLAINT_STATUS: {
@@ -73,6 +101,7 @@ export const AGENT_ALLOWLIST: AgentName[] = [
   "recharge_agent",
   "account_agent",
   "complaint_agent",
+  "wallet_agent",
 ];
 
 export function getIntentDefinition(intent: string): IntentDefinition | undefined {

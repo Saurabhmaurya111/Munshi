@@ -1,8 +1,10 @@
 import { createMiddleware } from "hono/factory";
 import {
   CoreError,
+  getDeskAgent,
   getMockCustomer,
   type Db,
+  type DeskAgent,
   type MockCustomer,
 } from "@repo/core";
 
@@ -17,6 +19,7 @@ export type AppVariables = {
   db: Db;
   customer?: MockCustomer;
   desk?: DeskActor;
+  deskAgent?: DeskAgent;
 };
 
 export const requireCustomer = createMiddleware<{
@@ -44,6 +47,7 @@ export const requireCustomer = createMiddleware<{
 
 const DESK_ROLES = new Set<DeskRole>(["agent", "approver", "admin"]);
 
+/** Header-based desk actor (approve/reject/demo clock). */
 export const requireDesk = createMiddleware<{
   Variables: AppVariables;
 }>(async (c, next) => {
@@ -63,4 +67,31 @@ export const requireDesk = createMiddleware<{
   }
   c.set("desk", { actorId, role: roleRaw as DeskRole });
   await next();
+});
+
+/** Named desk agent from DESK_AGENTS (queue / takeover / hand-back). */
+export const requireDeskAgent = createMiddleware<{
+  Variables: AppVariables;
+}>(async (c, next) => {
+  const agentId = c.req.header("x-desk-agent-id")?.trim();
+  if (!agentId) {
+    return c.json(
+      { error: "Missing X-Desk-Agent-Id header", code: "UNAUTHORIZED" },
+      401,
+    );
+  }
+
+  try {
+    const agent = getDeskAgent(agentId);
+    c.set("deskAgent", agent);
+    await next();
+  } catch (error) {
+    if (error instanceof CoreError && error.code === "NOT_FOUND") {
+      return c.json(
+        { error: "Unknown desk agent", code: "UNAUTHORIZED" },
+        401,
+      );
+    }
+    throw error;
+  }
 });

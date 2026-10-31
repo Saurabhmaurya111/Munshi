@@ -1,0 +1,52 @@
+{
+  "id": "multi-intent-upi-refund",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "My UPI payment failed and my refund is still pending.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-002",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN23456" }
+      },
+      {
+        "intent": "REFUND_STATUS",
+        "entities": { "refundId": "RFD23456" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "failed",
+        "transactionId": "TXN23456"
+      }
+    },
+    "getRefundStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "pending",
+        "refundId": "RFD23456"
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["UPI_PAYMENT_ISSUE", "REFUND_STATUS"],
+    "agents": ["upi_agent", "refund_agent"],
+    "toolsMustRun": ["getTransactionStatus", "getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["failed", "pending"],
+    "replyMustNotMatch": ["refunded"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

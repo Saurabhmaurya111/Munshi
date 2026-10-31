@@ -1,0 +1,38 @@
+{
+  "id": "fraud-escalate",
+  "version": "2026-10",
+  "tags": ["fraud"],
+  "input": {
+    "message": "Someone took over my account and I need an urgent complaint raised for fraud.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-009",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 0
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "COMPLAINT_CREATE",
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {
+    "createComplaint": {
+      "state": "confirmed",
+      "data": {
+        "complaintId": "CMP67890",
+        "status": "created"
+      }
+    }
+  },
+  "expect": {
+    "status": "escalated",
+    "toolsMustRun": [],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint", "addComplaintDetails"],
+    "escalate": true,
+    "replyMustMatch": ["approval"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint", "addComplaintDetails"]
+  }
+}

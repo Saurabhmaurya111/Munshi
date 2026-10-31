@@ -1,0 +1,33 @@
+{
+  "id": "missing-txn-clarification",
+  "version": "2026-10",
+  "tags": ["missing-information"],
+  "input": {
+    "message": "Something went wrong with my UPI payment.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-004",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {},
+  "expect": {
+    "status": "needs_clarification",
+    "intents": ["UPI_PAYMENT_ISSUE"],
+    "agents": ["upi_agent"],
+    "toolsMustRun": [],
+    "toolsMustNotRun": ["getTransactionStatus", "createComplaint"],
+    "escalate": false,
+    "requiresCustomerInput": true,
+    "replyMustMatch": ["Please share"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

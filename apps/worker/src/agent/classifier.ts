@@ -59,6 +59,13 @@ export function createLlmClassifier(
       const parsed = rawClassificationSchema.safeParse(raw);
 
       if (!parsed.success) {
+        if (options.fallback) {
+          const outcome = await options.fallback.classify(input);
+          return outcome.status === "classified"
+            ? { ...outcome, fallbackReason: "llm_invalid_schema" }
+            : outcome;
+        }
+
         return {
           status: "invalid",
           reason: "The language model returned an invalid classification.",
@@ -72,6 +79,110 @@ export function createLlmClassifier(
         classification: parsed.data as RawClassification,
         source,
       };
+    },
+  };
+}
+
+export type HybridClassifierOptions = {
+  rules: IntentClassifier;
+  llm: IntentClassifier;
+};
+
+const CLEAR_RULE_LOOKUP = new Set([
+  "UPI_PAYMENT_ISSUE",
+  "REFUND_STATUS",
+  "RECHARGE_ISSUE",
+  "WALLET_REFUND_TRACK",
+]);
+
+function hasLookupEntity(entities: Record<string, unknown>): boolean {
+  return (
+    entities.transactionId !== undefined ||
+    entities.refundId !== undefined ||
+    entities.rechargeNumber !== undefined ||
+    entities.amount !== undefined ||
+    entities.relativeDate !== undefined ||
+    entities.complaintId !== undefined
+  );
+}
+
+export function shouldPreferRuleClassification(
+  classification: RawClassification,
+): boolean {
+  if (classification.intents.length !== 1) {
+    return false;
+  }
+
+  const intent = classification.intents[0];
+  if (!intent) return false;
+
+  if (intent.intent === "ACCOUNT_ISSUE" || intent.intent === "WALLET_BALANCE") {
+    return true;
+  }
+
+  if (intent.intent === "WALLET_PAYMENT_TRACK") {
+    return true;
+  }
+
+  if (CLEAR_RULE_LOOKUP.has(intent.intent)) {
+    return hasLookupEntity(intent.entities ?? {});
+  }
+
+  if (intent.intent === "COMPLAINT_STATUS") {
+    return intent.entities?.complaintId !== undefined;
+  }
+
+  return false;
+}
+
+export function mergeClassificationEntities(
+  classification: RawClassification,
+  extracted: Record<string, unknown>,
+): RawClassification {
+  return {
+    intents: classification.intents.map((intent) => {
+      const entities = { ...(intent.entities ?? {}) };
+      for (const [name, value] of Object.entries(extracted)) {
+        if (entities[name] === undefined) {
+          entities[name] = value;
+        }
+      }
+      return { ...intent, entities };
+    }),
+  };
+}
+
+export function createHybridClassifier(
+  options: HybridClassifierOptions,
+): IntentClassifier {
+  return {
+    async classify(input: IntentClassifierInput): Promise<ClassificationOutcome> {
+      const rulesOutcome = await options.rules.classify(input);
+
+      if (
+        rulesOutcome.status === "classified" &&
+        shouldPreferRuleClassification(rulesOutcome.classification)
+      ) {
+        return rulesOutcome;
+      }
+
+      const llmOutcome = await options.llm.classify(input);
+
+      if (llmOutcome.status === "classified") {
+        return {
+          ...llmOutcome,
+          classification: mergeClassificationEntities(
+            llmOutcome.classification,
+            extractReferenceEntities(input.message),
+          ),
+        };
+      }
+
+      if (rulesOutcome.status === "classified") {
+        return rulesOutcome;
+      }
+
+      return llmOutcome;
     },
   };
 }
@@ -149,6 +260,34 @@ const COMPLAINT_STATUS_WORDS = /\b(status|check|track|update|kya hua|where is|pr
 function detectIntents(message: string): string[] {
   const text = message.toLowerCase();
   const detected: string[] = [];
+  const mentionsWallet = /\bwallet\b|paytm\s*wallet|add\s*money/.test(text);
+
+  if (mentionsWallet) {
+    if (/\bbalance\b|\bkitna\b|how\s+much|\bfrozen\b|\blimited\b/.test(text)) {
+      detected.push("WALLET_BALANCE");
+    }
+
+    if (/\brefund\b|reversal|paisa\s*wapas|credit(ed)?\s*(back|to\s*wallet)/.test(text)) {
+      detected.push("WALLET_REFUND_TRACK");
+    }
+
+    if (
+      detected.length === 0 ||
+      /\bpayment\b|\bupi\b|transaction|history|ledger|statement|track|spent|debited|add\s*money/.test(
+        text,
+      )
+    ) {
+      if (
+        !detected.includes("WALLET_REFUND_TRACK") ||
+        /\bpayment\b|\bupi\b|history|ledger|statement|track/.test(text)
+      ) {
+        detected.push("WALLET_PAYMENT_TRACK");
+      }
+    }
+
+    return [...new Set(detected)];
+  }
+
   const recharge = RECHARGE.test(text);
 
   if (UPI_STRONG.test(text) || (!recharge && UPI_WEAK.test(text))) {

@@ -32,7 +32,7 @@ describe("createLlmClassifier", () => {
     }
   });
 
-  it("rejects a malformed classification without falling back", async () => {
+  it("falls back when the classification schema is invalid", async () => {
     let fallbackCalled = false;
 
     const classifier = createLlmClassifier(
@@ -54,8 +54,8 @@ describe("createLlmClassifier", () => {
 
     const outcome = await classifier.classify(input);
 
-    expect(outcome.status).toBe("invalid");
-    expect(fallbackCalled).toBe(false);
+    expect(outcome.status).toBe("classified");
+    expect(fallbackCalled).toBe(true);
   });
 
   it("uses the fallback when the model is unavailable", async () => {
@@ -219,5 +219,32 @@ describe("createRuleBasedClassifier", () => {
     });
 
     expect(outcome.status).toBe("invalid");
+  });
+
+  it("routes Paytm wallet messages to wallet intents", async () => {
+    const balance = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "What is my Paytm wallet balance?",
+    });
+    expect(balance.status).toBe("classified");
+    if (balance.status === "classified") {
+      expect(balance.classification.intents.map((item) => item.intent)).toEqual([
+        "WALLET_BALANCE",
+      ]);
+    }
+
+    const track = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "Track my wallet payments and UPI add money",
+    });
+    expect(track.status).toBe("classified");
+    if (track.status === "classified") {
+      expect(track.classification.intents.map((item) => item.intent)).toContain(
+        "WALLET_PAYMENT_TRACK",
+      );
+      expect(track.classification.intents.map((item) => item.intent)).not.toContain(
+        "UPI_PAYMENT_ISSUE",
+      );
+    }
   });
 });

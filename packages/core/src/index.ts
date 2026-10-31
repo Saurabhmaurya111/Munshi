@@ -37,17 +37,36 @@ export {
 } from "./clock.js";
 
 export {
+  DESK_AGENTS,
+  appendHumanMessage,
   applyDeskCommand,
   getCaseById,
+  getCaseForDesk,
+  getDeskAgent,
+  handBackCase,
   listCaseEventsAfter,
+  listDeskQueue,
+  requestHumanTransfer,
   requestWriteApproval,
+  takeoverCase,
+  transferCaseToHumanWithEpoch,
 } from "./desk.js";
 export type {
   ApplyDeskCommandInput,
   ApplyDeskCommandResult,
   DeskActor,
+  DeskAgent,
   DeskCommandType,
+  DeskQueueItem,
+  TransferResult,
 } from "./desk.js";
 
 export { notifyCaseEvent, onCaseEvent } from "./notify.js";
 export type { CaseEventNotice } from "./notify.js";
+
+export {
+  getCaseTicket,
+  inferHandoffCategory,
+  raiseHandoffTicket,
+} from "./tickets.js";
+export type { HandoffTicket, HandoffTicketCategory } from "./tickets.js";

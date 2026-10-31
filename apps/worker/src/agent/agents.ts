@@ -51,6 +51,7 @@ const AGENT_DOMAINS: Record<AgentName, Domain> = {
   recharge_agent: "recharge",
   account_agent: "account",
   complaint_agent: "complaint",
+  wallet_agent: "wallet",
 };
 
 const FRAUD_SENSITIVE_DOMAINS: Domain[] = ["upi", "account"];
@@ -171,6 +172,55 @@ function compileToolPlan(task: AgentTask, context: AgentRunContext): ToolPlan {
     case "ACCOUNT_ISSUE":
       return { ok: true, attempts: [{ tool: "getAccountSupportStatus", args: {} }] };
 
+    case "WALLET_BALANCE":
+      return { ok: true, attempts: [{ tool: "getWalletBalance", args: {} }] };
+
+    case "WALLET_PAYMENT_TRACK": {
+      const transactionId = stringEntity(entities, "transactionId");
+
+      if (transactionId) {
+        return {
+          ok: true,
+          attempts: [{ tool: "getWalletPaymentStatus", args: { transactionId } }],
+        };
+      }
+
+      const filters = filterAttempts("getWalletPayments", entities).map((attempt) => ({
+        ...attempt,
+        args: { ...attempt.args, channel: "all" },
+      }));
+
+      if (filters.length > 0) {
+        return { ok: true, attempts: filters };
+      }
+
+      return { ok: true, attempts: [{ tool: "getWalletLedger", args: {} }] };
+    }
+
+    case "WALLET_REFUND_TRACK": {
+      const refundId = stringEntity(entities, "refundId");
+      const transactionId = stringEntity(entities, "transactionId");
+
+      if (refundId) {
+        return {
+          ok: true,
+          attempts: [{ tool: "getWalletRefundDetails", args: { refundId } }],
+        };
+      }
+
+      if (transactionId) {
+        return {
+          ok: true,
+          attempts: [{ tool: "getWalletRefundStatus", args: { transactionId } }],
+        };
+      }
+
+      const attempts = filterAttempts("getWalletRefundStatus", entities);
+      return attempts.length > 0
+        ? { ok: true, attempts }
+        : { ok: false, missing: ["refundId", "transactionId", "amount", "relativeDate"] };
+    }
+
     case "COMPLAINT_STATUS": {
       const complaintId = stringEntity(entities, "complaintId");
 
@@ -215,6 +265,8 @@ function labelFor(task: AgentTask): string {
       return "account";
     case "complaint":
       return "complaint";
+    case "wallet":
+      return "wallet payment";
   }
 }
 
@@ -234,6 +286,8 @@ function clarificationFor(task: AgentTask, missing: string[]): string {
       return "Please share the refund reference, or the payment and amount it's for, so I can find the right refund.";
     case "recharge":
       return "Please share the recharge reference, or the mobile number and amount, so I can find the right recharge.";
+    case "wallet":
+      return "Please share the wallet payment or refund reference, or the amount and date, so I can find the right wallet activity.";
     default:
       return `Please share a little more detail so I can find the right ${labelFor(task)}.`;
   }

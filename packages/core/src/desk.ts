@@ -2,6 +2,11 @@ import type { Db, DbClient } from "./db.js";
 import { withTransaction } from "./db.js";
 import { notifyCaseEvent } from "./notify.js";
 import {
+  getCaseTicket,
+  raiseHandoffTicket,
+  type HandoffTicket,
+} from "./tickets.js";
+import {
   CoreError,
   type Audience,
   type CaseEventRow,
@@ -35,16 +40,18 @@ type EventDbRow = {
   created_at: Date;
 };
 
-type IntentDbRow = {
+export type DeskAgent = {
   id: string;
-  case_id: string;
-  step_id: string;
-  tool: string;
-  idempotency_key: string;
-  state: string;
-  args: Record<string, unknown>;
-  result: unknown;
+  displayName: string;
+  role: "agent" | "approver" | "admin";
 };
+
+/** Local mock Desk agents until real auth ships. */
+export const DESK_AGENTS: DeskAgent[] = [
+  { id: "desk-priya", displayName: "Priya", role: "agent" },
+  { id: "desk-rahul", displayName: "Rahul", role: "approver" },
+  { id: "desk-admin", displayName: "Admin", role: "admin" },
+];
 
 function mapCase(row: CaseDbRow): CaseRow {
   return {
@@ -76,36 +83,50 @@ function mapEvent(row: EventDbRow): CaseEventRow {
   };
 }
 
+export function getDeskAgent(agentId: string): DeskAgent {
+  const agent = DESK_AGENTS.find((row) => row.id === agentId);
+  if (!agent) {
+    throw new CoreError("Unknown desk agent", "NOT_FOUND");
+  }
+  return agent;
+}
+
+async function findEventByCommandId(
+  client: DbClient,
+  caseId: string,
+  type: string,
+  commandId: string,
+): Promise<CaseEventRow | null> {
+  const result = await client.query<EventDbRow>(
+    `SELECT id, case_id, seq, type, audience, payload, created_at
+     FROM case_events
+     WHERE case_id = $1
+       AND type = $2
+       AND payload->>'commandId' = $3
+     LIMIT 1`,
+    [caseId, type, commandId],
+  );
+  const row = result.rows[0];
+  return row ? mapEvent(row) : null;
+}
+
 async function appendEvent(
   client: DbClient,
   input: {
     caseId: string;
+    nextSeq: number;
     type: string;
     audience: Audience;
     payload: Record<string, unknown>;
-    ownership?: OwnershipState;
-    runnable?: boolean;
-    clearLease?: boolean;
-    bumpEpoch?: boolean;
   },
-): Promise<{ case: CaseRow; event: CaseEventRow }> {
-  const caseResult = await client.query<CaseDbRow>(
-    `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
-    [input.caseId],
-  );
-  const caseRow = caseResult.rows[0];
-  if (!caseRow) {
-    throw new CoreError("Case not found", "NOT_FOUND");
-  }
-
-  const nextSeq = Number(caseRow.last_event_seq) + 1;
+): Promise<CaseEventRow> {
   const eventResult = await client.query<EventDbRow>(
     `INSERT INTO case_events (case_id, seq, type, audience, payload)
      VALUES ($1, $2, $3, $4::event_audience, $5::jsonb)
      RETURNING id, case_id, seq, type, audience, payload, created_at`,
     [
       input.caseId,
-      nextSeq,
+      input.nextSeq,
       input.type,
       input.audience,
       JSON.stringify(input.payload),
@@ -115,35 +136,803 @@ async function appendEvent(
   if (!eventRow) {
     throw new CoreError("Failed to append event", "CONFLICT");
   }
+  return mapEvent(eventRow);
+}
 
-  const updated = await client.query<CaseDbRow>(
-    `UPDATE cases
-     SET last_event_seq = $2,
-         ownership = COALESCE($3::ownership_state, ownership),
-         runnable = COALESCE($4::boolean, runnable),
-         lease_owner = CASE WHEN $5 THEN NULL ELSE lease_owner END,
-         lease_expires_at = CASE WHEN $5 THEN NULL ELSE lease_expires_at END,
-         epoch = CASE WHEN $6 THEN epoch + 1 ELSE epoch END,
-         updated_at = now()
-     WHERE id = $1
-     RETURNING *`,
-    [
-      input.caseId,
-      nextSeq,
-      input.ownership ?? null,
-      input.runnable === undefined ? null : input.runnable,
-      Boolean(input.clearLease),
-      Boolean(input.bumpEpoch),
-    ],
+export type DeskQueueItem = {
+  case: CaseRow;
+  waitingFor: "human" | "approval";
+  latestCustomerText: string | null;
+  escalationSummary: string | null;
+  recommendation: string | null;
+  ticketId: string | null;
+  ticketStatus: string | null;
+};
+
+function noticeWithTicket(base: string, ticketId: string): string {
+  const trimmed = base.trim();
+  if (trimmed.includes(ticketId)) return trimmed;
+  return `${trimmed} Your ticket ID is ${ticketId}.`;
+}
+
+/**
+ * Cases waiting on a human: HUMAN_OWNED queue and PENDING_APPROVAL holds.
+ */
+export async function listDeskQueue(
+  db: Db,
+  input?: { limit?: number },
+): Promise<DeskQueueItem[]> {
+  const limit = input?.limit ?? 50;
+  const result = await db.query<CaseDbRow>(
+    `SELECT *
+     FROM cases
+     WHERE ownership IN ('HUMAN_OWNED', 'PENDING_APPROVAL')
+       AND status <> 'closed'
+     ORDER BY priority DESC, updated_at ASC
+     LIMIT $1`,
+    [limit],
   );
-  const updatedCase = updated.rows[0];
-  if (!updatedCase) {
-    throw new CoreError("Failed to update case", "CONFLICT");
+
+  const items: DeskQueueItem[] = [];
+  for (const row of result.rows) {
+    const caseRow = mapCase(row);
+    const events = await db.query<EventDbRow>(
+      `SELECT id, case_id, seq, type, audience, payload, created_at
+       FROM case_events
+       WHERE case_id = $1
+       ORDER BY seq DESC
+       LIMIT 40`,
+      [caseRow.id],
+    );
+
+    let latestCustomerText: string | null = null;
+    let escalationSummary: string | null = null;
+    let recommendation: string | null = null;
+    let ticketId: string | null = null;
+
+    for (const event of events.rows) {
+      if (
+        !latestCustomerText &&
+        event.type === "customer_message" &&
+        typeof event.payload?.text === "string"
+      ) {
+        latestCustomerText = event.payload.text;
+      }
+      if (
+        !escalationSummary &&
+        event.type === "escalation_summary" &&
+        typeof event.payload?.summary === "string"
+      ) {
+        escalationSummary = event.payload.summary;
+        recommendation =
+          typeof event.payload.recommendation === "string"
+            ? event.payload.recommendation
+            : null;
+        if (typeof event.payload.ticketId === "string") {
+          ticketId = event.payload.ticketId;
+        }
+      }
+      if (
+        !ticketId &&
+        typeof event.payload?.ticketId === "string" &&
+        (event.type === "human_transfer" ||
+          event.type === "ticket_raised" ||
+          event.type === "human_takeover")
+      ) {
+        ticketId = event.payload.ticketId;
+      }
+      if (latestCustomerText && escalationSummary && ticketId) break;
+    }
+
+    const ticket = await getCaseTicket(db, {
+      caseId: caseRow.id,
+      customerId: caseRow.customerId,
+    });
+
+    items.push({
+      case: caseRow,
+      waitingFor:
+        caseRow.ownership === "PENDING_APPROVAL" ? "approval" : "human",
+      latestCustomerText,
+      escalationSummary,
+      recommendation,
+      ticketId: ticket?.complaintId ?? ticketId,
+      ticketStatus: ticket?.status ?? null,
+    });
   }
 
-  await notifyCaseEvent(client, { caseId: input.caseId, seq: nextSeq });
-  return { case: mapCase(updatedCase), event: mapEvent(eventRow) };
+  return items;
 }
+
+export type TransferResult = {
+  case: CaseRow;
+  events: CaseEventRow[];
+  created: boolean;
+  ticket?: HandoffTicket;
+};
+
+/**
+ * Worker-held transfer: set ownership to human / pending approval, publish
+ * desk summary + customer notice, release lease. Uses the fencing epoch.
+ */
+export async function transferCaseToHumanWithEpoch(
+  db: Db,
+  input: {
+    caseId: string;
+    heldEpoch: string;
+    reason: string;
+    summary: string;
+    recommendation: string;
+    neededFromHuman: string;
+    ownership?: "HUMAN_OWNED" | "PENDING_APPROVAL";
+    customerNotice?: string;
+    includeCustomerNotice?: boolean;
+    source?: "ai_escalate" | "customer_request" | "desk_takeover";
+  },
+): Promise<TransferResult> {
+  const ownership = input.ownership ?? "HUMAN_OWNED";
+  const includeCustomerNotice = input.includeCustomerNotice ?? true;
+  const customerNotice =
+    input.customerNotice ??
+    (ownership === "PENDING_APPROVAL"
+      ? "I’ve handed this to a support specialist for approval. They’ll continue from here."
+      : "I’ve connected you with a support specialist who can help resolve this.");
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+    if (caseRow.epoch !== input.heldEpoch) {
+      throw new CoreError("Epoch mismatch; lease lost", "CONFLICT");
+    }
+
+    if (
+      caseRow.ownership === "HUMAN_OWNED" ||
+      caseRow.ownership === "PENDING_APPROVAL"
+    ) {
+      const existingTicket = await getCaseTicket(client, {
+        caseId: input.caseId,
+        customerId: caseRow.customer_id,
+      });
+      return {
+        case: mapCase(caseRow),
+        events: [],
+        created: false,
+        ...(existingTicket ? { ticket: existingTicket } : {}),
+      };
+    }
+
+    const ticket = await raiseHandoffTicket(client, {
+      caseId: input.caseId,
+      customerId: caseRow.customer_id,
+      summary: input.summary,
+      reason: input.reason,
+      source: input.source ?? "ai_escalate",
+    });
+
+    const notice = noticeWithTicket(customerNotice, ticket.complaintId);
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const events: CaseEventRow[] = [];
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "ticket_raised",
+        audience: "desk",
+        payload: {
+          ticketId: ticket.complaintId,
+          status: ticket.status,
+          category: ticket.category,
+          summary: ticket.summary,
+          created: ticket.created,
+          source: input.source ?? "ai_escalate",
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "escalation_summary",
+        audience: "desk",
+        payload: {
+          reason: input.reason,
+          summary: input.summary,
+          recommendation: input.recommendation,
+          neededFromHuman: input.neededFromHuman,
+          ownership,
+          source: input.source ?? "ai_escalate",
+          ticketId: ticket.complaintId,
+          ticketStatus: ticket.status,
+        },
+      }),
+    );
+
+    if (includeCustomerNotice) {
+      nextSeq += 1;
+      events.push(
+        await appendEvent(client, {
+          caseId: input.caseId,
+          nextSeq,
+          type: "human_transfer",
+          audience: "customer",
+          payload: {
+            text: notice,
+            ownership,
+            reason: input.reason,
+            ticketId: ticket.complaintId,
+          },
+        }),
+      );
+    }
+
+    const updated = await client.query<CaseDbRow>(
+      `UPDATE cases
+       SET last_event_seq = $2,
+           ownership = $3::ownership_state,
+           runnable = false,
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           wake_at = NULL,
+           updated_at = now()
+       WHERE id = $1 AND epoch = $4
+       RETURNING *`,
+      [input.caseId, nextSeq, ownership, input.heldEpoch],
+    );
+    const updatedCase = updated.rows[0];
+    if (!updatedCase) {
+      throw new CoreError("Epoch mismatch; lease lost", "CONFLICT");
+    }
+
+    return {
+      case: mapCase(updatedCase),
+      events,
+      created: true,
+      ticket,
+    };
+  });
+}
+
+/**
+ * Desk takeover: bump epoch (kills in-flight AI), set HUMAN_OWNED.
+ * Idempotent by commandId.
+ */
+export async function takeoverCase(
+  db: Db,
+  input: {
+    caseId: string;
+    agentId: string;
+    commandId: string;
+    note?: string;
+  },
+): Promise<TransferResult> {
+  const agent = getDeskAgent(input.agentId);
+  const commandId = input.commandId.trim();
+  if (!commandId) {
+    throw new CoreError("commandId is required", "BAD_REQUEST");
+  }
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    const existing = await findEventByCommandId(
+      client,
+      input.caseId,
+      "human_takeover",
+      commandId,
+    );
+    if (existing) {
+      const existingTicket = await getCaseTicket(client, {
+        caseId: input.caseId,
+        customerId: caseRow.customer_id,
+      });
+      return {
+        case: mapCase(caseRow),
+        events: [existing],
+        created: false,
+        ...(existingTicket ? { ticket: existingTicket } : {}),
+      };
+    }
+
+    const ticket = await raiseHandoffTicket(client, {
+      caseId: input.caseId,
+      customerId: caseRow.customer_id,
+      summary:
+        input.note?.trim() ||
+        `Desk takeover by ${agent.displayName}`,
+      reason: "desk_takeover",
+      source: "desk_takeover",
+    });
+
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const events: CaseEventRow[] = [];
+
+    if (ticket.created) {
+      events.push(
+        await appendEvent(client, {
+          caseId: input.caseId,
+          nextSeq,
+          type: "ticket_raised",
+          audience: "desk",
+          payload: {
+            ticketId: ticket.complaintId,
+            status: ticket.status,
+            category: ticket.category,
+            summary: ticket.summary,
+            created: ticket.created,
+            source: "desk_takeover",
+          },
+        }),
+      );
+      nextSeq += 1;
+    }
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_takeover",
+        audience: "desk",
+        payload: {
+          commandId,
+          agentId: agent.id,
+          agentName: agent.displayName,
+          note: input.note ?? null,
+          ticketId: ticket.complaintId,
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_transfer",
+        audience: "customer",
+        payload: {
+          text: noticeWithTicket(
+            `${agent.displayName} from support has joined this conversation.`,
+            ticket.complaintId,
+          ),
+          ownership: "HUMAN_OWNED",
+          reason: "desk_takeover",
+          agentId: agent.id,
+          agentName: agent.displayName,
+          ticketId: ticket.complaintId,
+        },
+      }),
+    );
+
+    const updated = await client.query<CaseDbRow>(
+      `UPDATE cases
+       SET last_event_seq = $2,
+           ownership = 'HUMAN_OWNED'::ownership_state,
+           epoch = epoch + 1,
+           runnable = false,
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           wake_at = NULL,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.caseId, nextSeq],
+    );
+    const updatedCase = updated.rows[0];
+    if (!updatedCase) {
+      throw new CoreError("Failed to takeover case", "CONFLICT");
+    }
+
+    return {
+      case: mapCase(updatedCase),
+      events,
+      created: true,
+      ticket,
+    };
+  });
+}
+
+/**
+ * Customer-requested transfer to a human (idempotent by commandId).
+ */
+export async function requestHumanTransfer(
+  db: Db,
+  input: {
+    caseId: string;
+    customerId: string;
+    commandId: string;
+    reason?: string;
+  },
+): Promise<TransferResult> {
+  const commandId = input.commandId.trim();
+  if (!commandId) {
+    throw new CoreError("commandId is required", "BAD_REQUEST");
+  }
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+    if (caseRow.customer_id !== input.customerId) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    const existing = await findEventByCommandId(
+      client,
+      input.caseId,
+      "human_transfer_request",
+      commandId,
+    );
+    if (existing) {
+      return { case: mapCase(caseRow), events: [existing], created: false };
+    }
+
+    if (
+      caseRow.ownership === "HUMAN_OWNED" ||
+      caseRow.ownership === "PENDING_APPROVAL"
+    ) {
+      const existingTicket = await getCaseTicket(client, {
+        caseId: input.caseId,
+        customerId: caseRow.customer_id,
+      });
+      return {
+        case: mapCase(caseRow),
+        events: [],
+        created: false,
+        ...(existingTicket ? { ticket: existingTicket } : {}),
+      };
+    }
+
+    const reason = input.reason?.trim() || "customer_requested";
+    const ticket = await raiseHandoffTicket(client, {
+      caseId: input.caseId,
+      customerId: caseRow.customer_id,
+      summary: "Customer asked to speak with a human support agent.",
+      reason,
+      source: "customer_request",
+    });
+
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const events: CaseEventRow[] = [];
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_transfer_request",
+        audience: "desk",
+        payload: {
+          commandId,
+          reason,
+          customerId: input.customerId,
+          ticketId: ticket.complaintId,
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "ticket_raised",
+        audience: "desk",
+        payload: {
+          ticketId: ticket.complaintId,
+          status: ticket.status,
+          category: ticket.category,
+          summary: ticket.summary,
+          created: ticket.created,
+          source: "customer_request",
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "escalation_summary",
+        audience: "desk",
+        payload: {
+          reason,
+          summary: "Customer asked to speak with a human support agent.",
+          recommendation:
+            "Take over the case and continue helping the customer.",
+          neededFromHuman:
+            "Join the conversation and resolve the customer's request.",
+          ownership: "HUMAN_OWNED",
+          source: "customer_request",
+          ticketId: ticket.complaintId,
+          ticketStatus: ticket.status,
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_transfer",
+        audience: "customer",
+        payload: {
+          text: noticeWithTicket(
+            "I’ve connected you with a support specialist. Stay on this chat — they’ll reply here shortly.",
+            ticket.complaintId,
+          ),
+          ownership: "HUMAN_OWNED",
+          reason,
+          ticketId: ticket.complaintId,
+        },
+      }),
+    );
+
+    const updated = await client.query<CaseDbRow>(
+      `UPDATE cases
+       SET last_event_seq = $2,
+           ownership = 'HUMAN_OWNED'::ownership_state,
+           epoch = epoch + 1,
+           runnable = false,
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           wake_at = NULL,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.caseId, nextSeq],
+    );
+    const updatedCase = updated.rows[0];
+    if (!updatedCase) {
+      throw new CoreError("Failed to transfer case", "CONFLICT");
+    }
+
+    return {
+      case: mapCase(updatedCase),
+      events,
+      created: true,
+      ticket,
+    };
+  });
+}
+
+/**
+ * Hand the case back to Munshi with an instruction note.
+ */
+export async function handBackCase(
+  db: Db,
+  input: {
+    caseId: string;
+    agentId: string;
+    commandId: string;
+    note: string;
+    instruction?: string;
+  },
+): Promise<TransferResult> {
+  const agent = getDeskAgent(input.agentId);
+  const commandId = input.commandId.trim();
+  const note = input.note.trim();
+  if (!commandId) {
+    throw new CoreError("commandId is required", "BAD_REQUEST");
+  }
+  if (!note) {
+    throw new CoreError("note is required", "BAD_REQUEST");
+  }
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    const existing = await findEventByCommandId(
+      client,
+      input.caseId,
+      "human_handback",
+      commandId,
+    );
+    if (existing) {
+      return { case: mapCase(caseRow), events: [existing], created: false };
+    }
+
+    if (
+      caseRow.ownership !== "HUMAN_OWNED" &&
+      caseRow.ownership !== "PENDING_APPROVAL"
+    ) {
+      throw new CoreError("Case is not human-owned", "BAD_REQUEST");
+    }
+
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const events: CaseEventRow[] = [];
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_handback",
+        audience: "desk",
+        payload: {
+          commandId,
+          agentId: agent.id,
+          agentName: agent.displayName,
+          note,
+          instruction: input.instruction?.trim() || null,
+        },
+      }),
+    );
+    nextSeq += 1;
+
+    events.push(
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "human_transfer",
+        audience: "customer",
+        payload: {
+          text: "Your case is back with Munshi. I’ll continue from the specialist’s notes.",
+          ownership: "AI_ACTIVE",
+          reason: "hand_back",
+        },
+      }),
+    );
+
+    const updated = await client.query<CaseDbRow>(
+      `UPDATE cases
+       SET last_event_seq = $2,
+           ownership = 'AI_ACTIVE'::ownership_state,
+           epoch = epoch + 1,
+           runnable = true,
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           wake_at = NULL,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.caseId, nextSeq],
+    );
+    const updatedCase = updated.rows[0];
+    if (!updatedCase) {
+      throw new CoreError("Failed to hand back case", "CONFLICT");
+    }
+
+    return { case: mapCase(updatedCase), events, created: true };
+  });
+}
+
+/**
+ * Human agent reply visible to the customer.
+ */
+export async function appendHumanMessage(
+  db: Db,
+  input: {
+    caseId: string;
+    agentId: string;
+    message: string;
+    commandId: string;
+  },
+): Promise<TransferResult> {
+  const agent = getDeskAgent(input.agentId);
+  const message = input.message.trim();
+  const commandId = input.commandId.trim();
+  if (!message) {
+    throw new CoreError("message is required", "BAD_REQUEST");
+  }
+  if (!commandId) {
+    throw new CoreError("commandId is required", "BAD_REQUEST");
+  }
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    const existing = await findEventByCommandId(
+      client,
+      input.caseId,
+      "human_message",
+      commandId,
+    );
+    if (existing) {
+      return { case: mapCase(caseRow), events: [existing], created: false };
+    }
+
+    if (caseRow.ownership !== "HUMAN_OWNED") {
+      throw new CoreError(
+        "Case must be human-owned before sending a desk reply",
+        "BAD_REQUEST",
+      );
+    }
+
+    const nextSeq = Number(caseRow.last_event_seq) + 1;
+    const event = await appendEvent(client, {
+      caseId: input.caseId,
+      nextSeq,
+      type: "human_message",
+      audience: "customer",
+      payload: {
+        commandId,
+        text: message,
+        agentId: agent.id,
+        agentName: agent.displayName,
+      },
+    });
+
+    const updated = await client.query<CaseDbRow>(
+      `UPDATE cases
+       SET last_event_seq = $2,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.caseId, nextSeq],
+    );
+    const updatedCase = updated.rows[0];
+    if (!updatedCase) {
+      throw new CoreError("Failed to append human message", "CONFLICT");
+    }
+
+    return { case: mapCase(updatedCase), events: [event], created: true };
+  });
+}
+
+export async function getCaseForDesk(
+  db: Db,
+  input: { caseId: string },
+): Promise<CaseRow> {
+  const result = await db.query<CaseDbRow>(
+    `SELECT * FROM cases WHERE id = $1`,
+    [input.caseId],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new CoreError("Case not found", "NOT_FOUND");
+  }
+  return mapCase(row);
+}
+
+export async function getCaseById(db: Db, caseId: string): Promise<CaseRow> {
+  return getCaseForDesk(db, { caseId });
+}
+
+type IntentDbRow = {
+  id: string;
+  case_id: string;
+  step_id: string;
+  tool: string;
+  idempotency_key: string;
+  state: string;
+  args: Record<string, unknown>;
+  result: unknown;
+};
 
 async function findCommandEvent(
   client: DbClient,
@@ -161,6 +950,48 @@ async function findCommandEvent(
   );
   const row = result.rows[0];
   return row ? mapEvent(row) : null;
+}
+
+async function updateCaseAfterEvents(
+  client: DbClient,
+  input: {
+    caseId: string;
+    lastEventSeq: number;
+    ownership?: OwnershipState;
+    runnable?: boolean;
+    clearLease?: boolean;
+    bumpEpoch?: boolean;
+  },
+): Promise<CaseRow> {
+  const updated = await client.query<CaseDbRow>(
+    `UPDATE cases
+     SET last_event_seq = $2,
+         ownership = COALESCE($3::ownership_state, ownership),
+         runnable = COALESCE($4::boolean, runnable),
+         lease_owner = CASE WHEN $5 THEN NULL ELSE lease_owner END,
+         lease_expires_at = CASE WHEN $5 THEN NULL ELSE lease_expires_at END,
+         epoch = CASE WHEN $6 THEN epoch + 1 ELSE epoch END,
+         updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      input.caseId,
+      input.lastEventSeq,
+      input.ownership ?? null,
+      input.runnable === undefined ? null : input.runnable,
+      Boolean(input.clearLease),
+      Boolean(input.bumpEpoch),
+    ],
+  );
+  const updatedCase = updated.rows[0];
+  if (!updatedCase) {
+    throw new CoreError("Failed to update case", "CONFLICT");
+  }
+  await notifyCaseEvent(client, {
+    caseId: input.caseId,
+    seq: input.lastEventSeq,
+  });
+  return mapCase(updatedCase);
 }
 
 export type DeskCommandType =
@@ -224,6 +1055,9 @@ function assertCanAgent(actor: DeskActor): void {
   }
 }
 
+/**
+ * Park a write behind desk approval and notify the customer (pendingApproval).
+ */
 export async function requestWriteApproval(
   db: Db,
   input: {
@@ -235,8 +1069,19 @@ export async function requestWriteApproval(
   },
 ): Promise<{ case: CaseRow; deskEvent: CaseEventRow; statusEvent: CaseEventRow }> {
   return withTransaction(db, async (client) => {
-    const desk = await appendEvent(client, {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const deskEvent = await appendEvent(client, {
       caseId: input.caseId,
+      nextSeq,
       type: "approval_requested",
       audience: "desk",
       payload: {
@@ -244,13 +1089,12 @@ export async function requestWriteApproval(
         tool: input.tool,
         intentId: input.intentId ?? null,
       },
-      ownership: "PENDING_APPROVAL",
-      runnable: false,
-      clearLease: true,
     });
+    nextSeq += 1;
 
-    const status = await appendEvent(client, {
+    const statusEvent = await appendEvent(client, {
       caseId: input.caseId,
+      nextSeq,
       type: "status",
       audience: "customer",
       payload: {
@@ -261,19 +1105,23 @@ export async function requestWriteApproval(
         stepId: input.stepId,
         tool: input.tool,
       },
+    });
+
+    const updatedCase = await updateCaseAfterEvents(client, {
+      caseId: input.caseId,
+      lastEventSeq: nextSeq,
       ownership: "PENDING_APPROVAL",
       runnable: false,
       clearLease: true,
     });
 
-    return {
-      case: status.case,
-      deskEvent: desk.event,
-      statusEvent: status.event,
-    };
+    return { case: updatedCase, deskEvent, statusEvent };
   });
 }
 
+/**
+ * Approve / reject pending writes, or simple takeover / hand_back via commandId.
+ */
 export async function applyDeskCommand(
   db: Db,
   input: ApplyDeskCommandInput,
@@ -309,7 +1157,11 @@ export async function applyDeskCommand(
 
   if (input.type === "takeover" || input.type === "hand_back") {
     return withTransaction(db, async (client) => {
-      const duplicate = await findCommandEvent(client, input.caseId, input.commandId);
+      const duplicate = await findCommandEvent(
+        client,
+        input.caseId,
+        input.commandId,
+      );
       if (duplicate) {
         const caseRow = await client.query<CaseDbRow>(
           `SELECT * FROM cases WHERE id = $1`,
@@ -322,8 +1174,19 @@ export async function applyDeskCommand(
         };
       }
 
-      const appended = await appendEvent(client, {
+      const caseResult = await client.query<CaseDbRow>(
+        `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+        [input.caseId],
+      );
+      const caseRow = caseResult.rows[0];
+      if (!caseRow) {
+        throw new CoreError("Case not found", "NOT_FOUND");
+      }
+
+      const nextSeq = Number(caseRow.last_event_seq) + 1;
+      const event = await appendEvent(client, {
         caseId: input.caseId,
+        nextSeq,
         type: input.type === "takeover" ? "takeover" : "hand_back",
         audience: "desk",
         payload: {
@@ -332,12 +1195,18 @@ export async function applyDeskCommand(
           role: input.actor.role,
           note: input.note ?? null,
         },
+      });
+
+      const updatedCase = await updateCaseAfterEvents(client, {
+        caseId: input.caseId,
+        lastEventSeq: nextSeq,
         ownership: input.type === "takeover" ? "HUMAN_OWNED" : "AI_ACTIVE",
         runnable: input.type === "hand_back",
         clearLease: true,
         bumpEpoch: true,
       });
-      return { case: appended.case, event: appended.event, created: true };
+
+      return { case: updatedCase, event, created: true };
     });
   }
 
@@ -368,7 +1237,11 @@ export async function applyDeskCommand(
 
   if (input.type === "reject") {
     return withTransaction(db, async (client) => {
-      const duplicate = await findCommandEvent(client, input.caseId, input.commandId);
+      const duplicate = await findCommandEvent(
+        client,
+        input.caseId,
+        input.commandId,
+      );
       if (duplicate) {
         return {
           case: mapCase(caseRow),
@@ -393,8 +1266,19 @@ export async function applyDeskCommand(
         ],
       );
 
-      const appended = await appendEvent(client, {
+      const locked = await client.query<CaseDbRow>(
+        `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+        [input.caseId],
+      );
+      const lockedCase = locked.rows[0];
+      if (!lockedCase) {
+        throw new CoreError("Case not found", "NOT_FOUND");
+      }
+
+      let nextSeq = Number(lockedCase.last_event_seq) + 1;
+      const event = await appendEvent(client, {
         caseId: input.caseId,
+        nextSeq,
         type: "approval_rejected",
         audience: "desk",
         payload: {
@@ -404,24 +1288,29 @@ export async function applyDeskCommand(
           tool: intent.tool,
           note: input.note ?? null,
         },
-        ownership: "AI_ACTIVE",
-        runnable: true,
-        clearLease: true,
       });
+      nextSeq += 1;
 
       await appendEvent(client, {
         caseId: input.caseId,
+        nextSeq,
         type: "status",
         audience: "customer",
         payload: {
           text: "The pending support action was not approved.",
           pendingApproval: false,
         },
-        ownership: "AI_ACTIVE",
-        runnable: true,
       });
 
-      return { case: appended.case, event: appended.event, created: true };
+      const updatedCase = await updateCaseAfterEvents(client, {
+        caseId: input.caseId,
+        lastEventSeq: nextSeq,
+        ownership: "AI_ACTIVE",
+        runnable: true,
+        clearLease: true,
+      });
+
+      return { case: updatedCase, event, created: true };
     });
   }
 
@@ -439,7 +1328,11 @@ export async function applyDeskCommand(
   });
 
   return withTransaction(db, async (client) => {
-    const duplicate = await findCommandEvent(client, input.caseId, input.commandId);
+    const duplicate = await findCommandEvent(
+      client,
+      input.caseId,
+      input.commandId,
+    );
     if (duplicate) {
       return {
         case: mapCase(caseRow),
@@ -449,8 +1342,19 @@ export async function applyDeskCommand(
       };
     }
 
-    const appended = await appendEvent(client, {
+    const locked = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const lockedCase = locked.rows[0];
+    if (!lockedCase) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    let nextSeq = Number(lockedCase.last_event_seq) + 1;
+    const event = await appendEvent(client, {
       caseId: input.caseId,
+      nextSeq,
       type: "approval_granted",
       audience: "desk",
       payload: {
@@ -461,13 +1365,12 @@ export async function applyDeskCommand(
         executionState: execution.state,
         note: input.note ?? null,
       },
-      ownership: "AI_ACTIVE",
-      runnable: true,
-      clearLease: true,
     });
+    nextSeq += 1;
 
     await appendEvent(client, {
       caseId: input.caseId,
+      nextSeq,
       type: "status",
       audience: "customer",
       payload: {
@@ -479,13 +1382,19 @@ export async function applyDeskCommand(
         executionState: execution.state,
         data: execution.data ?? null,
       },
+    });
+
+    const updatedCase = await updateCaseAfterEvents(client, {
+      caseId: input.caseId,
+      lastEventSeq: nextSeq,
       ownership: "AI_ACTIVE",
       runnable: true,
+      clearLease: true,
     });
 
     return {
-      case: appended.case,
-      event: appended.event,
+      case: updatedCase,
+      event,
       created: true,
       execution,
     };
@@ -530,16 +1439,4 @@ export async function listCaseEventsAfter(
       );
 
   return result.rows.map(mapEvent);
-}
-
-export async function getCaseById(db: Db, caseId: string): Promise<CaseRow> {
-  const result = await db.query<CaseDbRow>(
-    `SELECT * FROM cases WHERE id = $1`,
-    [caseId],
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new CoreError("Case not found", "NOT_FOUND");
-  }
-  return mapCase(row);
 }

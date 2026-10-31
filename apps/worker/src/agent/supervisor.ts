@@ -3,6 +3,7 @@ import { END, START, Annotation, StateGraph } from "@langchain/langgraph";
 import { aggregateResults, toTaskSummaries } from "./aggregation.js";
 import { answerInputFrom, phraseWithModel, type AnswerModel } from "./answer.js";
 import type { AgentRunContext, AgentRunner } from "./agents.js";
+import { evaluateReplyPolicy } from "./policy.js";
 import { buildExecutionBatches, planTasks } from "./planning.js";
 import { detectRiskSignals, redactSecrets } from "./risk.js";
 import { supervisorRequestSchema, supervisorResponseSchema } from "./schemas.js";
@@ -331,44 +332,33 @@ export function buildSupervisorGraph(
         notes,
       );
 
-      return {
-        response: { ...drafted, message } satisfies SupervisorResponse,
-      };
-    })
-    .addNode("format_response", (state: State) => {
-      if (!state.response) {
-        return {
-          response: fallbackResponse(
-            state.conversationId,
-            "invalid",
-            "The request could not be completed.",
-          ),
-        };
+      let response: SupervisorResponse = { ...drafted, message };
+      const replyPolicy = evaluateReplyPolicy(dependencies.workflowLevel);
+
+      if (replyPolicy.decision === "hold_for_approval") {
+        if (response.status !== "escalated") {
+          response = {
+            ...response,
+            status: "escalated",
+            message:
+              "This reply is waiting for human approval before it is sent to the customer.",
+            requiresCustomerInput: false,
+          };
+        }
       }
 
-      const checked = supervisorResponseSchema.safeParse(state.response);
-
-      if (!checked.success) {
-        return {
-          response: fallbackResponse(
-            state.conversationId,
-            "invalid",
-            "The response could not be validated safely.",
-          ),
-        };
-      }
-
-      return { response: checked.data as SupervisorResponse };
+      return { response };
     })
     .addEdge(START, "classify_intents")
     .addEdge("classify_intents", "validate_intents")
-    .addEdge("validate_intents", "plan_tasks")
+    .addConditionalEdges("validate_intents", (state: State) =>
+      state.validation?.status === "runnable" ? "plan_tasks" : "aggregate_results",
+    )
     .addConditionalEdges("plan_tasks", (state: State) =>
       state.tasks.length > 0 ? "dispatch_tasks" : "aggregate_results",
     )
     .addEdge("dispatch_tasks", "aggregate_results")
-    .addEdge("aggregate_results", "format_response")
-    .addEdge("format_response", END);
+    .addEdge("aggregate_results", END);
 
   return graph.compile();
 }

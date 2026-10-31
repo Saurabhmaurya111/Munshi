@@ -8,13 +8,14 @@ import {
   type CustomerAnswerInput,
 } from "./agent/answer.js";
 import {
+  createHybridClassifier,
   createLlmClassifier,
   createRuleBasedClassifier,
   type ClassificationModel,
   type LlmClassifierOptions,
 } from "./agent/classifier.js";
 import type { SupervisorDependencies } from "./agent/supervisor.js";
-import type { IntentClassifierInput } from "./agent/types.js";
+import type { IntentClassifierInput, WorkflowLevel } from "./agent/types.js";
 import { createEmbeddingProviderFromEnv } from "./knowledge/embedding.js";
 import { createKnowledgeLookup } from "./knowledge/lookup.js";
 import { createPolicyRetriever } from "./knowledge/retrieval.js";
@@ -31,9 +32,13 @@ Allowed intent -> agent pairs:
 - REFUND_STATUS -> refund_agent (refund status, refund not received, delayed, failed, partial)
 - RECHARGE_ISSUE -> recharge_agent (mobile recharge failed, pending, benefit not received, duplicate, wrong number)
 - ACCOUNT_ISSUE -> account_agent (login, OTP, KYC, blocked account, hacked or suspicious account activity)
+- WALLET_BALANCE -> wallet_agent (Paytm wallet balance, frozen or limited wallet)
+- WALLET_PAYMENT_TRACK -> wallet_agent (wallet spends, UPI add-money, wallet payment history)
+- WALLET_REFUND_TRACK -> wallet_agent (refunds credited or expected into the Paytm wallet)
 - COMPLAINT_CREATE -> complaint_agent (customer asks to raise, file, or escalate a complaint)
 - COMPLAINT_STATUS -> complaint_agent (customer asks about an existing complaint)
 Entities (include only what the customer stated): transactionId, refundId, rechargeNumber (10-digit mobile), complaintId, amount (rupees, number), relativeDate (today|yesterday|last_week|last_month).
+When the customer mentions Paytm wallet / wallet balance / wallet history / wallet refund, prefer WALLET_* over generic UPI or REFUND.
 When one message has several issues, return one intent per issue and attach each amount or date only to the issue it belongs to.
 If the message only supplies a reference or detail, use pendingIntents as the intent.
 If nothing matches, return {"intents":[]}. Understand Hindi, English, and Hinglish.`;
@@ -133,13 +138,24 @@ export function describeAnswer(env: Record<string, string | undefined> = process
     : "draft";
 }
 
+function parseWorkflowLevel(raw: string | undefined): WorkflowLevel {
+  const value = raw?.trim();
+
+  if (value === "0") return 0;
+  if (value === "2") return 2;
+  return 1;
+}
+
 export function createWorkerDependencies(db: Db): SupervisorDependencies {
   const rules = createRuleBasedClassifier();
   const apiKey = process.env.SARVAM_API_KEY?.trim();
   const model = process.env.SARVAM_MODEL?.trim() || "sarvam-105b";
   const options: LlmClassifierOptions = { fallback: rules, name: `sarvam:${model}` };
   const classifier = apiKey
-    ? createLlmClassifier(buildSarvamClassifierModel(apiKey, model), options)
+    ? createHybridClassifier({
+        rules,
+        llm: createLlmClassifier(buildSarvamClassifierModel(apiKey, model), options),
+      })
     : rules;
 
   const tools: ToolInvoker = createInvokeTool({ db, timeoutMs: 8_000 });
@@ -155,6 +171,7 @@ export function createWorkerDependencies(db: Db): SupervisorDependencies {
     tools,
     knowledge: createKnowledgeLookup(retriever),
     ...(apiKey ? { answer: buildSarvamAnswerModel(apiKey, model) } : {}),
-    workflowLevel: 0,
+    workflowLevel: parseWorkflowLevel(process.env.MUNSHI_WORKFLOW_LEVEL),
+    confidenceThreshold: 0.5,
   };
 }

@@ -1,0 +1,44 @@
+{
+  "id": "wallet-balance-easy",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "What is my Paytm wallet balance?",
+    "authenticatedContext": {
+      "customerId": "customer-soham",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "WALLET_BALANCE",
+        "confidence": 0.95,
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {
+    "getWalletBalance": {
+      "state": "confirmed",
+      "data": {
+        "customerId": "customer-soham",
+        "balancePaise": 125000,
+        "balanceRupees": 1250,
+        "currency": "INR",
+        "status": "active"
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["WALLET_BALANCE"],
+    "agents": ["wallet_agent"],
+    "toolsMustRun": ["getWalletBalance"],
+    "toolsMustNotRun": ["getTransactions", "createComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["wallet", "active"],
+    "wrongActionIf": ["createComplaint"]
+  }
+}
