@@ -20,7 +20,81 @@
 .topActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.85rem;
+}
+
+.workflows {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--mist) 80%, transparent);
+}
+
+.workflowHint {
+  margin: 0 0 0.65rem;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.workflowList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.workflowRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--navy) 4%, white);
+  border: 1px solid color-mix(in srgb, var(--navy) 10%, transparent);
+}
+
+.workflowMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.workflowName {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.workflowLevel {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--ink) 62%, transparent);
+}
+
+.workflowSep {
+  margin: 0 0.25rem;
+  opacity: 0.4;
+}
+
+.promote {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 0.72rem;
+  color: white;
+  background: var(--navy);
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+}
+
+.promote:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .link,
@@ -160,6 +234,26 @@
   overflow: hidden;
   font-size: 0.86rem;
   color: color-mix(in srgb, var(--ink) 72%, transparent);
+}
+
+.parkedLevel {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--navy);
+  background: color-mix(in srgb, var(--amber) 18%, white);
+  border-radius: 0.4rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.promotionHint {
+  margin: 0.45rem 0 0;
+  max-width: 36rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--amber) 55%, var(--ink));
 }
 
 .casePane {

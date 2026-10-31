@@ -462,21 +462,42 @@ async function execute(task: AgentTask, context: AgentRunContext): Promise<Draft
       };
     }
 
-    if (policy.decision === "hold_for_approval") {
+    const stepId = `${context.turnId ? `${context.turnId}:` : ""}${task.taskId}:${index}:${step.tool}`;
+    const result = await context.tools.invoke({
+      caseId: context.caseId,
+      stepId,
+      tool: step.tool,
+      args: validated.data,
+      customerId: context.customerId,
+      workflowLevel: context.workflowLevel,
+    });
+
+    if (
+      policy.decision === "hold_for_approval" ||
+      result.state === "pending_approval"
+    ) {
       return {
         status: "escalated",
         response: `To ${task.intent === "COMPLAINT_CREATE" ? "raise a complaint" : "do this"}, I need approval from our support team first. Your request is recorded on this case, and you'll get the reference once it's done.`,
         errorCode: "APPROVAL_REQUIRED",
+        observations:
+          result.state === "pending_approval"
+            ? [
+                {
+                  tool: step.tool,
+                  state: "failed" as const,
+                  errorCode: "APPROVAL_REQUIRED",
+                },
+              ]
+            : undefined,
+        data: {
+          stepId,
+          tool: step.tool,
+          intentId:
+            result.state === "pending_approval" ? result.intentId : undefined,
+        },
       };
     }
-
-    const result = await context.tools.invoke({
-      caseId: context.caseId,
-      stepId: `${context.turnId ? `${context.turnId}:` : ""}${task.taskId}:${index}:${step.tool}`,
-      tool: step.tool,
-      args: validated.data,
-      customerId: context.customerId,
-    });
 
     if (result.state === "unknown") {
       observations.push({ tool: step.tool, state: "unknown", errorCode: result.errorCode });

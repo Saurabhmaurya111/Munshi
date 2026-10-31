@@ -22,6 +22,7 @@ const AGENT_LABELS: Record<AgentName, string> = {
   recharge_agent: "Recharge",
   account_agent: "Account",
   complaint_agent: "Complaint",
+  wallet_agent: "Wallet",
 };
 
 function composeMessage(results: AgentTaskResult[], notes: string[]): string {
@@ -99,5 +100,6 @@ export function toTaskSummaries(results: AgentTaskResult[]): SupervisorTaskSumma
       ? { citations: result.citations }
       : {}),
     ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+    ...(result.data ? { data: result.data } : {}),
   }));
 }

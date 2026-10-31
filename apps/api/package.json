@@ -8,12 +8,15 @@
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "start": "node --env-file=../../.env dist/index.js",
     "lint": "eslint . --max-warnings 0",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
     "@repo/core": "*",
+    "@repo/gateway": "*",
     "hono": "^4.9.8",
+    "socket.io": "^4.8.1",
     "zod": "^4.1.11"
   },
   "devDependencies": {
@@ -22,6 +25,7 @@
     "@types/node": "26.4.1",
     "eslint": "10.9.1",
     "tsx": "^4.20.5",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vitest": "^3.2.4"
   }
 }

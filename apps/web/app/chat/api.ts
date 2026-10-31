@@ -119,18 +119,51 @@ export async function getCase(caseId: string): Promise<CaseSnapshot> {
   return (await response.json()) as CaseSnapshot;
 }
 
+export function isPendingApprovalEvent(event: CaseEvent): boolean {
+  if (typeof event.payload.text !== "string") return false;
+  if (event.payload.pendingApproval === true) {
+    return event.type === "status" || event.type === "assistant_message";
+  }
+  return false;
+}
+
+export function isTurnResolutionEvent(event: CaseEvent): boolean {
+  if (typeof event.payload.text !== "string") return false;
+  if (isPendingApprovalEvent(event)) return false;
+  if (event.type === "assistant_message") return true;
+  if (event.type === "human_message") return true;
+  if (event.type === "status" && event.payload.pendingApproval === false) {
+    return true;
+  }
+  return false;
+}
+
+/** Final customer-facing reply after `afterSeq`, skipping parked-approval notices. */
 export function latestAssistantText(
   events: CaseEvent[],
   afterSeq: number,
 ): string | null {
   const replies = events.filter(
-    (event) =>
-      event.seq > afterSeq &&
-      event.type === "assistant_message" &&
-      typeof event.payload.text === "string",
+    (event) => event.seq > afterSeq && isTurnResolutionEvent(event),
   );
   const last = replies[replies.length - 1];
   return last ? String(last.payload.text) : null;
+}
+
+export function latestPendingApprovalText(
+  events: CaseEvent[],
+  afterSeq: number,
+): { text: string; seq: number } | null {
+  const pending = events.filter(
+    (event) => event.seq > afterSeq && isPendingApprovalEvent(event),
+  );
+  const last = pending[pending.length - 1];
+  if (!last || typeof last.payload.text !== "string") return null;
+  return { text: String(last.payload.text), seq: last.seq };
+}
+
+export function apiOrigin(): string {
+  return apiBase();
 }
 
 export type IncomingReply = {
@@ -139,19 +172,23 @@ export type IncomingReply = {
   seq: number;
 };
 
-/** Next customer-visible reply after `afterSeq` (assistant, human, or transfer). */
+/** Next customer-visible reply after `afterSeq` (assistant, status, human, or transfer). */
 export function nextIncomingReply(
   events: CaseEvent[],
   afterSeq: number,
+  options?: { includePendingApproval?: boolean },
 ): IncomingReply | null {
+  const includePending = options?.includePendingApproval === true;
   const candidates = events
     .filter(
       (event) =>
         event.seq > afterSeq &&
         (event.type === "assistant_message" ||
+          event.type === "status" ||
           event.type === "human_message" ||
           event.type === "human_transfer") &&
-        typeof event.payload.text === "string",
+        typeof event.payload.text === "string" &&
+        (includePending || !isPendingApprovalEvent(event)),
     )
     .sort((a, b) => a.seq - b.seq);
 
@@ -174,4 +211,47 @@ export function nextIncomingReply(
 
 export function isHumanOwned(ownership: string | undefined): boolean {
   return ownership === "HUMAN_OWNED" || ownership === "PENDING_APPROVAL";
+}
+
+export type WorkflowStatus = {
+  name: string;
+  level: 0 | 1 | 2;
+  consecutiveCleanRuns: number;
+  writeCleanRuns: number;
+  promotionThreshold: number;
+  progress: number;
+  nextLevel: 0 | 1 | 2 | null;
+  runsToNext: number;
+  updatedAt: string;
+};
+
+export async function getWorkflow(
+  name = "default",
+): Promise<WorkflowStatus> {
+  const safe = name.trim() || "default";
+  const response = await apiFetch(
+    `/v1/workflows/${encodeURIComponent(safe)}`,
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || `API ${response.status}`);
+  }
+  return (await response.json()) as WorkflowStatus;
+}
+
+/** Latest domain workflow stamped on turn / reply / status events. */
+export function latestWorkflowName(
+  events: CaseEvent[],
+  fallback = "default",
+): string {
+  const ordered = [...events].sort((a, b) => b.seq - a.seq);
+  for (const event of ordered) {
+    const name = event.payload.workflowName;
+    if (typeof name === "string" && name.trim()) {
+      return name.trim();
+    }
+  }
+  return fallback;
 }

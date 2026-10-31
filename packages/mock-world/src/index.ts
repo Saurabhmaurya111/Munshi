@@ -1,5 +1,15 @@
-export type { MockSystem, Queryable, HandlerResult, ToolHandler } from "./types.js";
+export type {
+  MockSystem,
+  Queryable,
+  HandlerResult,
+  ToolHandler,
+  ToolOutcomeLookup,
+} from "./types.js";
 export { createMockWorldHandlers } from "./handlers.js";
+export {
+  lookupByIdempotencyKey,
+  recordToolOutcome,
+} from "./outcomes.js";
 export {
   amountToPaise,
   relativeDateRange,

@@ -336,15 +336,16 @@ export function buildSupervisorGraph(
       const replyPolicy = evaluateReplyPolicy(dependencies.workflowLevel);
 
       if (replyPolicy.decision === "hold_for_approval") {
-        if (response.status !== "escalated") {
-          response = {
-            ...response,
-            status: "escalated",
-            message:
-              "This reply is waiting for human approval before it is sent to the customer.",
-            requiresCustomerInput: false,
-          };
-        }
+        // Keep the real answer as draftReply — do not treat this as a human handoff.
+        response = {
+          ...response,
+          status: "escalated",
+          pendingReplyApproval: true,
+          draftReply: drafted.message,
+          message:
+            "I’ve looked into this and prepared a reply. It’s waiting for desk approval before I send it.",
+          requiresCustomerInput: false,
+        };
       }
 
       return { response };

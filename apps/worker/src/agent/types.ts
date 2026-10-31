@@ -140,6 +140,8 @@ export type AgentTaskResult = {
   passages?: GroundingPassage[];
   observations?: ToolObservation[];
   errorCode?: string;
+  /** Extra payload for desk approval (stepId, tool, intentId). */
+  data?: Record<string, unknown>;
 };
 
 export type ToolInvocationInput = {
@@ -148,12 +150,23 @@ export type ToolInvocationInput = {
   tool: string;
   args: Record<string, unknown>;
   customerId: string;
+  executeApproved?: boolean;
+  approvedBy?: string;
+  heldEpoch?: string;
+  workflowLevel?: 0 | 1 | 2;
 };
 
 export type ToolInvocationResult =
   | { state: "confirmed"; data: unknown }
   | { state: "failed"; errorCode: string; message: string }
-  | { state: "unknown"; reason: "timeout" | "transport"; errorCode?: string };
+  | { state: "unknown"; reason: "timeout" | "transport"; errorCode?: string }
+  | {
+      state: "pending_approval";
+      intentId: string;
+      stepId: string;
+      tool: string;
+      message: string;
+    };
 
 export type ToolInvoker = {
   invoke(input: ToolInvocationInput): Promise<ToolInvocationResult>;
@@ -197,6 +210,7 @@ export type SupervisorTaskSummary = {
   references?: string[];
   citations?: string[];
   errorCode?: string;
+  data?: Record<string, unknown>;
 };
 
 export type SupervisorResponse = {
@@ -205,4 +219,8 @@ export type SupervisorResponse = {
   message: string;
   tasks: SupervisorTaskSummary[];
   requiresCustomerInput: boolean;
+  /** L0 reply hold: draft is ready but must not transfer to a human. */
+  pendingReplyApproval?: boolean;
+  /** Customer-facing answer waiting for desk approve. */
+  draftReply?: string;
 };

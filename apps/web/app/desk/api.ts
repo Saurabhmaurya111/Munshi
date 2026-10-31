@@ -13,6 +13,10 @@ export type DeskQueueItem = {
   recommendation: string | null;
   ticketId: string | null;
   ticketStatus: string | null;
+  parkedAtWorkflowName: string | null;
+  parkedAtWorkflowLevel: 0 | 1 | 2 | null;
+  currentWorkflowLevel: 0 | 1 | 2 | null;
+  promotionHint: string | null;
 };
 
 export type DeskCaseEvent = {
@@ -96,6 +100,50 @@ export async function getDeskCase(caseId: string): Promise<DeskCaseSnapshot> {
   return (await response.json()) as DeskCaseSnapshot;
 }
 
+export async function approveDeskItem(input: {
+  caseId: string;
+  stepId: string;
+  commandId: string;
+  note?: string;
+}): Promise<void> {
+  const response = await deskFetch(`/v1/desk/cases/${input.caseId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({
+      commandId: input.commandId,
+      stepId: input.stepId,
+      note: input.note,
+    }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || `API ${response.status}`);
+  }
+}
+
+export async function rejectDeskItem(input: {
+  caseId: string;
+  stepId: string;
+  commandId: string;
+  note?: string;
+}): Promise<void> {
+  const response = await deskFetch(`/v1/desk/cases/${input.caseId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({
+      commandId: input.commandId,
+      stepId: input.stepId,
+      note: input.note,
+    }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || `API ${response.status}`);
+  }
+}
+
 export async function takeoverCase(input: {
   caseId: string;
   commandId: string;
@@ -163,4 +211,48 @@ export async function postDeskMessage(input: {
     };
     throw new Error(body.error || `API ${response.status}`);
   }
+}
+
+export type WorkflowStatus = {
+  name: string;
+  level: 0 | 1 | 2;
+  consecutiveCleanRuns: number;
+  writeCleanRuns: number;
+  promotionThreshold: number;
+  progress: number;
+  nextLevel: 0 | 1 | 2 | null;
+  runsToNext: number;
+  updatedAt: string;
+};
+
+export async function listWorkflows(): Promise<WorkflowStatus[]> {
+  const response = await deskFetch("/v1/workflows");
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || `API ${response.status}`);
+  }
+  const body = (await response.json()) as { items: WorkflowStatus[] };
+  return body.items ?? [];
+}
+
+export async function promoteWorkflow(
+  name: string,
+  level?: 0 | 1 | 2,
+): Promise<WorkflowStatus> {
+  const response = await deskFetch(
+    `/v1/workflows/${encodeURIComponent(name)}/promote`,
+    {
+      method: "POST",
+      body: JSON.stringify(level === undefined ? {} : { level }),
+    },
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || `API ${response.status}`);
+  }
+  return (await response.json()) as WorkflowStatus;
 }
