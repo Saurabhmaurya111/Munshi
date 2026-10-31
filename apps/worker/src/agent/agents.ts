@@ -8,6 +8,7 @@ import type {
   AgentTask,
   AgentTaskResult,
   Domain,
+  GroundingPassage,
   KnowledgeLookup,
   RiskSignals,
   ToolInvoker,
@@ -246,35 +247,56 @@ function citationId(passage: { documentId: string; documentVersion: string; chun
   return `${passage.documentId}@${passage.documentVersion}#${passage.chunkIndex}`;
 }
 
-async function lookupCitations(task: AgentTask, context: AgentRunContext): Promise<string[]> {
+async function lookupCitations(
+  task: AgentTask,
+  context: AgentRunContext,
+): Promise<{ citations: string[]; passages: GroundingPassage[] }> {
   if (!context.knowledge) {
-    return [];
+    return { citations: [], passages: [] };
   }
 
   try {
-    const passages = await context.knowledge({
+    const found = await context.knowledge({
       query: redactSecrets(context.message),
       category: task.domain,
     });
-    return passages.slice(0, MAX_CITATIONS).map(citationId);
+    const selected = found.slice(0, MAX_CITATIONS);
+
+    return {
+      citations: selected.map(citationId),
+      passages: selected.flatMap((passage) => {
+        const content = passage.content.trim();
+        if (content.length === 0) return [];
+
+        return [
+          {
+            citation: citationId(passage),
+            title: passage.documentTitle,
+            ...(passage.heading ? { heading: passage.heading } : {}),
+            content,
+          },
+        ];
+      }),
+    };
   } catch {
-    return [];
+    return { citations: [], passages: [] };
   }
 }
 
-type Draft = Omit<AgentTaskResult, "taskId" | "agent" | "intent" | "citations">;
+type Draft = Omit<AgentTaskResult, "taskId" | "agent" | "intent" | "citations" | "passages">;
 
 function finish(
   task: AgentTask,
   draft: Draft,
-  citations: string[],
+  grounding: { citations: string[]; passages: GroundingPassage[] },
 ): AgentTaskResult {
   return {
     taskId: task.taskId,
     agent: task.agent,
     intent: task.intent,
     ...draft,
-    ...(citations.length > 0 ? { citations } : {}),
+    ...(grounding.citations.length > 0 ? { citations: grounding.citations } : {}),
+    ...(grounding.passages.length > 0 ? { passages: grounding.passages } : {}),
   };
 }
 
@@ -480,11 +502,11 @@ export function createAgentRunner(): AgentRunner {
     task: AgentTask,
     context: AgentRunContext,
   ): Promise<AgentTaskResult> {
-    const [draft, citations] = await Promise.all([
+    const [draft, grounding] = await Promise.all([
       execute(task, context),
       lookupCitations(task, context),
     ]);
 
-    return finish(task, applyRisk(task, context, draft), citations);
+    return finish(task, applyRisk(task, context, draft), grounding);
   };
 }

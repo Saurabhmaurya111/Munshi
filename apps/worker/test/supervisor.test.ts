@@ -366,6 +366,52 @@ describe("runSupervisor", () => {
     expect(response.message.match(/security team/g)).toHaveLength(1);
   });
 
+  it("phrases the customer reply with the answer model and keeps the verified summary", async () => {
+    let seenDraft = "";
+    const deps = dependencies(
+      {
+        intents: [
+          { intent: "UPI_PAYMENT_ISSUE", entities: { transactionId: "TXN12345" } },
+        ],
+      },
+      {
+        getTransactionStatus: () => confirmed({ status: "success", transactionId: "TXN12345" }),
+      },
+    );
+    deps.answer = async (input) => {
+      seenDraft = input.draft;
+      return "That payment went through.";
+    };
+
+    const response = await runSupervisor(request, deps);
+
+    expect(seenDraft).toContain("TXN12345");
+    expect(response.message).toBe("That payment went through.");
+    expect(response.tasks[0]?.summary).toContain("TXN12345");
+    expect(response.status).toBe("completed");
+  });
+
+  it("keeps the verified draft when the answer model fails", async () => {
+    const deps = dependencies(
+      {
+        intents: [
+          { intent: "UPI_PAYMENT_ISSUE", entities: { transactionId: "TXN12345" } },
+        ],
+      },
+      {
+        getTransactionStatus: () => confirmed({ status: "success", transactionId: "TXN12345" }),
+      },
+    );
+    deps.answer = async () => {
+      throw new Error("sarvam down");
+    };
+
+    const response = await runSupervisor(request, deps);
+
+    expect(response.message).toContain("TXN12345");
+    expect(response.message).toContain("successful");
+  });
+
   it("ignores injected entity keys and uses the session customer", async () => {
     const deps = dependencies(
       {

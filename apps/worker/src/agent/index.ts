@@ -9,6 +9,7 @@ export * from "./tool-client.js";
 export * from "./classifier.js";
 export * from "./risk.js";
 export * from "./explain.js";
+export * from "./answer.js";
 export * from "./trace.js";
 export * from "./agents.js";
 export * from "./aggregation.js";

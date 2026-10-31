@@ -129,7 +129,7 @@ Demo auth is the `X-Customer-Id` header (`customer-soham`, `customer-aditya`, `c
 npm run dev:worker
 # Claims a runnable case, runs the supervisor (rule-based classifier by default,
 # or Sarvam chat if SARVAM_API_KEY is set), calls read tools via the gateway,
-# appends assistant_message for the customer.
+# and phrases the customer reply with Sarvam from those verified facts.
 ```
 
 Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500), `SARVAM_API_KEY`, `SARVAM_MODEL` (default `sarvam-105b`).
@@ -142,7 +142,7 @@ Each turn stores an internal `worker_step` event with the run trace (classifier 
 npm run knowledge:ingest   # chunks docs/policies/*.md into policy_chunks (pgvector)
 ```
 
-Uses OpenAI embeddings when `OPENAI_API_KEY` is set, otherwise an offline hashing embedder. The worker queries with the same provider, so re-run ingestion after switching. Agents attach the retrieved passages as `citations` on each task. Customer-facing facts still come only from tools.
+Uses OpenAI embeddings when `OPENAI_API_KEY` is set, otherwise an offline hashing embedder. The worker queries with the same provider, so re-run ingestion after switching. Agents attach the retrieved passages as `citations` on each task. When `SARVAM_API_KEY` is set, Sarvam writes the customer reply from the verified tool draft and those passages, and the draft is sent instead if that call fails. Amounts, statuses, and references still come only from tools.
 
 ### Agent evals
 

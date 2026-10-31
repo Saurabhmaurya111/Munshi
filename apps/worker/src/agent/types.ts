@@ -51,6 +51,14 @@ export type KnowledgePassage = {
   score: number;
 };
 
+/** Policy text kept for the answer model. It is not copied onto the customer event. */
+export type GroundingPassage = {
+  citation: string;
+  title: string;
+  heading?: string;
+  content: string;
+};
+
 export type KnowledgeLookup = (input: {
   query: string;
   category: Domain;
@@ -121,6 +129,8 @@ export type AgentTaskResult = {
   references?: string[];
   /** Policy passages the answer was grounded on, as `documentId@version#chunk`. */
   citations?: string[];
+  /** Passage text used to phrase the reply. Omitted from task summaries. */
+  passages?: GroundingPassage[];
   observations?: ToolObservation[];
   errorCode?: string;
 };

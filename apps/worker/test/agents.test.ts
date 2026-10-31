@@ -329,6 +329,13 @@ describe("createAgentRunner", () => {
 
     expect(grounded.status).toBe("completed");
     expect(grounded.citations).toEqual(["policy-account@2026-10#2"]);
+    expect(grounded.passages).toEqual([
+      {
+        citation: "policy-account@2026-10#2",
+        title: "Account help",
+        content: "## OTP not received",
+      },
+    ]);
 
     const ungrounded = await createAgentRunner()(
       task,

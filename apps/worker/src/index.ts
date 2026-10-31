@@ -3,7 +3,7 @@ import { createDb } from "@repo/core";
 import { loadEnv } from "./env.js";
 import { runWorkerLoop } from "./loop.js";
 import { createEmbeddingProviderFromEnv } from "./knowledge/embedding.js";
-import { createWorkerDependencies, describeClassifier } from "./runtime.js";
+import { createWorkerDependencies, describeAnswer, describeClassifier } from "./runtime.js";
 
 export * from "./agent/index.js";
 export * from "./knowledge/index.js";
@@ -39,6 +39,7 @@ async function main() {
       leaseMs: env.leaseMs,
       pollMs: env.pollMs,
       classifier: describeClassifier(),
+      answer: describeAnswer(),
       embedder: createEmbeddingProviderFromEnv().name,
     }),
   );

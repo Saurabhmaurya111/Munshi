@@ -2,6 +2,12 @@ import { createInvokeTool, type ToolInvoker } from "@repo/gateway";
 import type { Db } from "@repo/core";
 import { createAgentRunner } from "./agent/agents.js";
 import {
+  ANSWER_SYSTEM_PROMPT,
+  buildAnswerUserContent,
+  type AnswerModel,
+  type CustomerAnswerInput,
+} from "./agent/answer.js";
+import {
   createLlmClassifier,
   createRuleBasedClassifier,
   type ClassificationModel,
@@ -32,47 +38,67 @@ When one message has several issues, return one intent per issue and attach each
 If the message only supplies a reference or detail, use pendingIntents as the intent.
 If nothing matches, return {"intents":[]}. Understand Hindi, English, and Hinglish.`;
 
+async function sarvamChat(options: {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  messages: Array<{ role: "system" | "user"; content: string }>;
+  json?: boolean;
+  maxTokens?: number;
+}): Promise<string> {
+  const response = await fetch(SARVAM_CHAT_URL, {
+    method: "POST",
+    signal: AbortSignal.timeout(SARVAM_TIMEOUT_MS),
+    headers: {
+      "api-subscription-key": options.apiKey,
+      Authorization: `Bearer ${options.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: options.model,
+      temperature: options.temperature,
+      reasoning_effort: "low",
+      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      ...(options.json ? { response_format: { type: "json_object" } } : {}),
+      messages: options.messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`sarvam_http_${response.status}${detail ? `:${detail.slice(0, 200)}` : ""}`);
+  }
+
+  const body = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  const content = body.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("sarvam_empty");
+  }
+
+  return content;
+}
+
 function buildSarvamClassifierModel(apiKey: string, model: string): ClassificationModel {
   return async (input: IntentClassifierInput) => {
-    const response = await fetch(SARVAM_CHAT_URL, {
-      method: "POST",
-      signal: AbortSignal.timeout(SARVAM_TIMEOUT_MS),
-      headers: {
-        "api-subscription-key": apiKey,
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        reasoning_effort: "low",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: CLASSIFIER_PROMPT },
-          {
-            role: "user",
-            content: JSON.stringify({
-              message: input.message,
-              recentEvents: (input.recentEvents ?? []).slice(-6),
-              pendingIntents: input.pendingIntents ?? [],
-            }),
-          },
-        ],
-      }),
+    const content = await sarvamChat({
+      apiKey,
+      model,
+      temperature: 0.1,
+      json: true,
+      messages: [
+        { role: "system", content: CLASSIFIER_PROMPT },
+        {
+          role: "user",
+          content: JSON.stringify({
+            message: input.message,
+            recentEvents: (input.recentEvents ?? []).slice(-6),
+            pendingIntents: input.pendingIntents ?? [],
+          }),
+        },
+      ],
     });
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`sarvam_http_${response.status}${detail ? `:${detail.slice(0, 200)}` : ""}`);
-    }
-
-    const body = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-    };
-    const content = body.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("sarvam_empty");
-    }
 
     // Models sometimes wrap JSON in markdown fences.
     const trimmed = content.trim();
@@ -81,10 +107,30 @@ function buildSarvamClassifierModel(apiKey: string, model: string): Classificati
   };
 }
 
+function buildSarvamAnswerModel(apiKey: string, model: string): AnswerModel {
+  return async (input: CustomerAnswerInput) =>
+    sarvamChat({
+      apiKey,
+      model,
+      temperature: 0.3,
+      maxTokens: 500,
+      messages: [
+        { role: "system", content: ANSWER_SYSTEM_PROMPT },
+        { role: "user", content: buildAnswerUserContent(input) },
+      ],
+    });
+}
+
 export function describeClassifier(env: Record<string, string | undefined> = process.env): string {
   return env.SARVAM_API_KEY?.trim()
     ? `sarvam:${env.SARVAM_MODEL?.trim() || "sarvam-105b"}+rules`
     : "rules";
+}
+
+export function describeAnswer(env: Record<string, string | undefined> = process.env): string {
+  return env.SARVAM_API_KEY?.trim()
+    ? `sarvam:${env.SARVAM_MODEL?.trim() || "sarvam-105b"}`
+    : "draft";
 }
 
 export function createWorkerDependencies(db: Db): SupervisorDependencies {
@@ -108,6 +154,7 @@ export function createWorkerDependencies(db: Db): SupervisorDependencies {
     runner: createAgentRunner(),
     tools,
     knowledge: createKnowledgeLookup(retriever),
+    ...(apiKey ? { answer: buildSarvamAnswerModel(apiKey, model) } : {}),
     workflowLevel: 0,
   };
 }

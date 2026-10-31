@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { END, START, Annotation, StateGraph } from "@langchain/langgraph";
 import { aggregateResults, toTaskSummaries } from "./aggregation.js";
+import { answerInputFrom, phraseWithModel, type AnswerModel } from "./answer.js";
 import type { AgentRunContext, AgentRunner } from "./agents.js";
 import { buildExecutionBatches, planTasks } from "./planning.js";
 import { detectRiskSignals, redactSecrets } from "./risk.js";
@@ -23,7 +24,7 @@ import type {
   WorkflowLevel,
 } from "./types.js";
 
-export const PROMPT_VERSION = "supervisor-v2";
+export const PROMPT_VERSION = "supervisor-v3";
 
 const DEFAULT_TASK_TIMEOUT_MS = 20_000;
 const GRAPH_RECURSION_LIMIT = 25;
@@ -36,6 +37,8 @@ export type SupervisorDependencies = {
   amountApprovalThreshold?: number;
   confidenceThreshold?: number;
   knowledge?: KnowledgeLookup;
+  /** Phrases the customer reply. The verified draft is kept when this is absent or fails. */
+  answer?: AnswerModel;
   taskTimeoutMs?: number;
 };
 
@@ -296,27 +299,40 @@ export function buildSupervisorGraph(
       recorder?.results(results);
       return { results };
     })
-    .addNode("aggregate_results", (state: State) => {
-      if (!state.validation || state.validation.status !== "runnable") {
-        return { response: responseFromValidation(state) };
-      }
-
+    .addNode("aggregate_results", async (state: State) => {
       const notes = [
         ...(state.risk.sharedSecret ? [SECRET_WARNING] : []),
         ...(state.results.some((result) => result.errorCode === "FRAUD_SUSPECTED")
           ? [SECURITY_ESCALATION]
           : []),
       ];
-      const aggregated = aggregateResults(state.results, { notes });
+      const aggregated =
+        state.validation?.status === "runnable"
+          ? aggregateResults(state.results, { notes })
+          : undefined;
+      const drafted: SupervisorResponse = aggregated
+        ? {
+            conversationId: state.conversationId,
+            status: aggregated.status,
+            message: aggregated.message,
+            tasks: toTaskSummaries(state.results),
+            requiresCustomerInput: aggregated.requiresCustomerInput,
+          }
+        : responseFromValidation(state);
+
+      const message = await phraseWithModel(
+        dependencies.answer,
+        answerInputFrom({
+          customerMessage: redactSecrets(state.customerMessage),
+          status: drafted.status,
+          draft: drafted.message,
+          results: state.results,
+        }),
+        notes,
+      );
 
       return {
-        response: {
-          conversationId: state.conversationId,
-          status: aggregated.status,
-          message: aggregated.message,
-          tasks: toTaskSummaries(state.results),
-          requiresCustomerInput: aggregated.requiresCustomerInput,
-        } satisfies SupervisorResponse,
+        response: { ...drafted, message } satisfies SupervisorResponse,
       };
     })
     .addNode("format_response", (state: State) => {
