@@ -1,0 +1,43 @@
+services:
+  postgres:
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    image: munshi-postgres:17-pgvector
+    container_name: munshi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-munshi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-munshi}
+      POSTGRES_DB: ${POSTGRES_DB:-munshi}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - munshi_postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-munshi} -d ${POSTGRES_DB:-munshi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    container_name: munshi-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - munshi_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  munshi_postgres_data:
+  munshi_redis_data:
