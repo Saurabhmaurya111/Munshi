@@ -95,6 +95,14 @@ munshi/
     scenarios/      labelled offline eval cases
 ```
 
+## Vercel (web + api services)
+
+Root [`vercel.json`](./vercel.json) deploys `web` and `api` as one project. Public
+paths `/health`, `/v1/*`, and `/socket.io/*` go to `api`; everything else to
+`web`. Server-side Next.js calls the API via the `API_URL` service binding.
+The worker is not on Vercel (run it elsewhere). Prefer `vercel dev` for local
+multi-service testing. Set `DATABASE_URL` (and desk secrets) in the Vercel project.
+
 ## Getting started
 
 ### Database and Redis
