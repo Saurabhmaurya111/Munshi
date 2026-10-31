@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   FormEvent,
   KeyboardEvent,
@@ -12,7 +13,11 @@ import {
 } from "react";
 import { Logo } from "../components/Logo";
 import {
-  customerId,
+  clearSession,
+  readSession,
+  type SessionCustomer,
+} from "../lib/session";
+import {
   getCase,
   latestAssistantText,
   postCustomerMessage,
@@ -30,12 +35,12 @@ type Message = {
 const STARTER: Message = {
   id: "welcome",
   role: "munshi",
-  text: "Hi — I’m Munshi. Tell me what went wrong with a payment, recharge, or refund. I’ll open a real case, look up mock-world records, and reply from the worker.",
+  text: "Hi — I’m Munshi. Tell me what went wrong with a payment, recharge, or refund, and I’ll take it from here.",
 };
 
 const HINTS = [
-  "My UPI payment txn_upi_1001 failed yesterday",
-  "IRCTC refund refund_5001 still pending",
+  "My UPI payment failed yesterday",
+  "My IRCTC refund is still pending",
   "Recharge of ₹299 failed last week",
 ];
 
@@ -47,6 +52,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 export function ChatClient() {
+  const router = useRouter();
+  const [session, setSession] = useState<SessionCustomer | null>(null);
+  const [ready, setReady] = useState(false);
   const [messages, setMessages] = useState<Message[]>([STARTER]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -60,8 +68,23 @@ export function ChatClient() {
   });
 
   useEffect(() => {
+    const current = readSession();
+    if (!current) {
+      router.replace("/login");
+      return;
+    }
+    setSession(current);
+    setReady(true);
+  }, [router]);
+
+  useEffect(() => {
     scrollToBottom();
   }, [messages, busy]);
+
+  function signOut() {
+    clearSession();
+    router.replace("/login");
+  }
 
   async function waitForAssistant(
     conversationId: string,
@@ -77,7 +100,7 @@ export function ChatClient() {
       await sleep(POLL_MS);
     }
     throw new Error(
-      "Timed out waiting for Munshi. Is `npm run dev:worker` running?",
+      "Munshi is taking longer than usual. Please try again in a moment.",
     );
   }
 
@@ -140,6 +163,14 @@ export function ChatClient() {
     }
   }
 
+  if (!ready || !session) {
+    return (
+      <div className={styles.shell}>
+        <p className={styles.loading}>Loading…</p>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
@@ -156,13 +187,20 @@ export function ChatClient() {
             <Logo href="/" size="sm" />
             <p className={styles.status}>
               <span className={styles.dot} aria-hidden="true" />
-              {busy ? "Working the case…" : `On the case · ${customerId()}`}
+              {busy
+                ? "Looking into it…"
+                : `Signed in as ${session.displayName}`}
             </p>
           </div>
         </div>
-        <Link href="/" className={styles.back}>
-          Back home
-        </Link>
+        <div className={styles.topActions}>
+          <button type="button" className={styles.switch} onClick={signOut}>
+            Switch account
+          </button>
+          <Link href="/" className={styles.back}>
+            Home
+          </Link>
+        </div>
       </header>
 
       <div className={styles.thread} role="log" aria-live="polite">
@@ -237,9 +275,7 @@ export function ChatClient() {
           </div>
         ) : null}
         {error && !busy ? (
-          <p className={styles.errorNote}>
-            Start API + worker: `npm run dev:api` and `npm run dev:worker`
-          </p>
+          <p className={styles.errorNote}>{error}</p>
         ) : null}
         <form className={styles.composer} onSubmit={onSubmit}>
           <textarea
@@ -248,7 +284,7 @@ export function ChatClient() {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Describe the issue…"
+            placeholder="Describe your issue…"
             rows={1}
             aria-label="Message Munshi"
             disabled={busy}

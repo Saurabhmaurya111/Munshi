@@ -1,3 +1,5 @@
+import { readSession } from "../lib/session";
+
 export type CaseEvent = {
   seq: number;
   type: string;
@@ -29,7 +31,9 @@ function apiBase(): string {
   );
 }
 
-function customerId(): string {
+export function customerId(): string {
+  const session = readSession();
+  if (session?.customerId) return session.customerId;
   return process.env.NEXT_PUBLIC_CUSTOMER_ID?.trim() || "customer-soham";
 }
 
@@ -92,5 +96,3 @@ export function latestAssistantText(
   const last = replies[replies.length - 1];
   return last ? String(last.payload.text) : null;
 }
-
-export { customerId };
