@@ -134,16 +134,17 @@ npm run dev:worker
 
 Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500), `SARVAM_API_KEY`, `SARVAM_MODEL` (default `sarvam-105b`).
 
-### Web chat (wired)
+### Start API + worker + web
 
 ```sh
-npm run dev:api
-npm run dev:worker
-npm run dev:web
-# Open http://127.0.0.1:3000/chat — messages hit the API and wait for the worker reply.
+npm run dev
+# API  http://127.0.0.1:3001
+# Web  http://127.0.0.1:3002/login → /chat
 ```
 
-`NEXT_PUBLIC_API_URL` (default `http://127.0.0.1:3001`), `NEXT_PUBLIC_CUSTOMER_ID` (default `customer-soham`).
+Loads root `.env` for all three. Optional: `NEXT_PUBLIC_API_URL`, `SARVAM_API_KEY`. Web login selects a seeded customer session for `X-Customer-Id`.
+
+Individual apps: `npm run dev:api`, `dev:worker`, `dev:web`.
 
 ### Tool gateway (B4)
 
