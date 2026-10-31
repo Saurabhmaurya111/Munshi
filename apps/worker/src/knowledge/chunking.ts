@@ -110,19 +110,46 @@ function joinUnits(units: TextUnit[]): string {
     .join("");
 }
 
-export function chunkPolicyText(
+function splitMarkdownSections(text: string): string[] {
+  const lines = text.split("\n");
+  const sections: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+
+  const flush = () => {
+    const section = current.join("\n").trim();
+
+    if (section) {
+      sections.push(section);
+    }
+
+    current = [];
+  };
+
+  lines.forEach((line) => {
+    if (line.trimStart().startsWith("```")) {
+      inFence = !inFence;
+    }
+
+    if (!inFence && /^#{1,2}\s+/.test(line) && current.length > 0) {
+      flush();
+    }
+
+    current.push(line);
+  });
+
+  flush();
+
+  return sections;
+}
+
+function chunkPlainText(
   text: string,
-  options: ChunkOptions = {},
-): PolicyChunkDraft[] {
-  const normalized = normalizePolicyText(text);
-
-  if (!normalized) {
-    return [];
-  }
-
-  const { maxChars, overlapChars } = resolveOptions(options);
-  const units = toUnits(normalized, maxChars);
-  const chunks: PolicyChunkDraft[] = [];
+  maxChars: number,
+  overlapChars: number,
+): string[] {
+  const units = toUnits(text, maxChars);
+  const chunks: string[] = [];
 
   let start = 0;
 
@@ -147,10 +174,7 @@ export function chunkPolicyText(
       end += 1;
     }
 
-    chunks.push({
-      chunkIndex: chunks.length,
-      content: joinUnits(chunkUnits),
-    });
+    chunks.push(joinUnits(chunkUnits));
 
     if (end >= units.length) {
       break;
@@ -177,6 +201,67 @@ export function chunkPolicyText(
     }
 
     start = overlapStart > start ? overlapStart : end;
+  }
+
+  return chunks;
+}
+
+function chunkSection(
+  section: string,
+  maxChars: number,
+  overlapChars: number,
+): string[] {
+  if (section.length <= maxChars) {
+    return [section];
+  }
+
+  const match = section.match(/^(#{1,2})[ \t]+([^\n]+)\n?/);
+
+  if (!match) {
+    return chunkPlainText(section, maxChars, overlapChars);
+  }
+
+  const heading = match[0].trim();
+  const body = section.slice(match[0].length);
+
+  if (!body.trim()) {
+    return [section];
+  }
+
+  const prefix = `${heading}\n\n`;
+  const bodyMaxChars = maxChars - prefix.length;
+
+  if (bodyMaxChars < 20) {
+    return chunkPlainText(section, maxChars, overlapChars);
+  }
+
+  const bodyOverlap = Math.min(overlapChars, bodyMaxChars - 1);
+
+  return chunkPlainText(body, bodyMaxChars, bodyOverlap).map(
+    (part) => `${prefix}${part}`,
+  );
+}
+
+export function chunkPolicyText(
+  text: string,
+  options: ChunkOptions = {},
+): PolicyChunkDraft[] {
+  const normalized = normalizePolicyText(text);
+
+  if (!normalized) {
+    return [];
+  }
+
+  const { maxChars, overlapChars } = resolveOptions(options);
+  const chunks: PolicyChunkDraft[] = [];
+
+  for (const section of splitMarkdownSections(normalized)) {
+    for (const content of chunkSection(section, maxChars, overlapChars)) {
+      chunks.push({
+        chunkIndex: chunks.length,
+        content,
+      });
+    }
   }
 
   return chunks;

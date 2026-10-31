@@ -31,6 +31,8 @@ const SupervisorState = Annotation.Root({
   conversationId: Annotation<string>(),
   customerMessage: Annotation<string>(),
   authenticatedContext: Annotation<AuthenticatedContext>(),
+  facts: Annotation<Record<string, unknown>>(),
+  recentEvents: Annotation<string[]>(),
   classification: Annotation<ClassificationOutcome | null>(),
   validation: Annotation<ValidationOutcome | null>(),
   tasks: Annotation<AgentTask[]>(),
@@ -86,6 +88,8 @@ export function initialSupervisorState(
     conversationId: request.conversationId,
     customerMessage: request.message,
     authenticatedContext: request.authenticatedContext,
+    facts: request.context?.facts ?? {},
+    recentEvents: request.context?.recentEvents ?? [],
     classification: null,
     validation: null,
     tasks: [],
@@ -101,6 +105,7 @@ export function buildSupervisorGraph(dependencies: SupervisorDependencies) {
         conversationId: state.conversationId,
         message: state.customerMessage,
         authenticatedContext: state.authenticatedContext,
+        recentEvents: state.recentEvents,
       });
 
       return { classification: outcome };
@@ -134,7 +139,7 @@ export function buildSupervisorGraph(dependencies: SupervisorDependencies) {
         return { tasks: [] };
       }
 
-      return { tasks: planTasks(state.validation.intents) };
+      return { tasks: planTasks(state.validation.intents, state.facts) };
     })
     .addNode("dispatch_tasks", async (state: typeof SupervisorState.State) => {
       const plan = buildExecutionBatches(state.tasks);

@@ -1,25 +1,56 @@
 import { INTENT_ORDER, getIntentDefinition } from "./intents.js";
+import { ENTITY_SCHEMAS } from "./schemas.js";
 import type { AgentTask, ValidatedIntent } from "./types.js";
 
 export type BatchPlan =
   | { ok: true; batches: AgentTask[][] }
   | { ok: false; reason: string };
 
-export function planTasks(intents: ValidatedIntent[]): AgentTask[] {
+function applyFacts(
+  entities: Record<string, unknown>,
+  facts: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...entities };
+
+  for (const [name, schema] of Object.entries(ENTITY_SCHEMAS)) {
+    if (merged[name] !== undefined || facts[name] === undefined) {
+      continue;
+    }
+
+    const parsed = schema.safeParse(facts[name]);
+
+    if (parsed.success) {
+      merged[name] = parsed.data;
+    }
+  }
+
+  return merged;
+}
+
+export function planTasks(
+  intents: ValidatedIntent[],
+  facts: Record<string, unknown> = {},
+): AgentTask[] {
   const ordered = [...intents].sort(
     (left, right) => INTENT_ORDER.indexOf(left.intent) - INTENT_ORDER.indexOf(right.intent),
   );
 
-  const tasks: AgentTask[] = ordered.map((intent, index) => ({
-    taskId: `task-${index + 1}`,
-    intent: intent.intent,
-    agent: intent.agent,
-    domain: intent.domain,
-    entities: { ...intent.entities },
-    dependsOn: [],
-    missingEntities: [...intent.missingEntities],
-    confidence: intent.confidence,
-  }));
+  const tasks: AgentTask[] = ordered.map((intent, index) => {
+    const entities = applyFacts(intent.entities, facts);
+
+    return {
+      taskId: `task-${index + 1}`,
+      intent: intent.intent,
+      agent: intent.agent,
+      domain: intent.domain,
+      entities,
+      dependsOn: [],
+      missingEntities: intent.missingEntities.filter(
+        (name) => entities[name] === undefined,
+      ),
+      confidence: intent.confidence,
+    };
+  });
 
   for (const task of tasks) {
     const definition = getIntentDefinition(task.intent);
