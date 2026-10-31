@@ -1,5 +1,6 @@
 import { apiBase } from "../lib/api-base";
 import { readDeskSession } from "../lib/desk-session";
+import type { DeskSession as DeskAuthSession } from "./session";
 
 export type DeskQueueItem = {
   conversationId: string;
@@ -53,6 +54,39 @@ async function deskFetch(path: string, init?: RequestInit): Promise<Response> {
       ...(init?.headers ?? {}),
     },
   });
+}
+
+export async function loginDesk(input: {
+  id: string;
+  password: string;
+}): Promise<DeskAuthSession> {
+  const response = await fetch(`${apiBase()}/v1/desk/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: input.id,
+      password: input.password,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error || "Sign in failed.");
+  }
+
+  const body = (await response.json()) as {
+    token: string;
+    actorId: string;
+    role: string;
+  };
+
+  return {
+    token: body.token,
+    actorId: body.actorId,
+    role: body.role,
+  };
 }
 
 export async function getDeskMe(): Promise<{

@@ -16,7 +16,7 @@
     "@repo/core": "*",
     "@repo/gateway": "*",
     "hono": "^4.9.8",
-    "socket.io": "^4.8.1",
+    "socket.io": "^4.8.4",
     "zod": "^4.1.11"
   },
   "devDependencies": {
