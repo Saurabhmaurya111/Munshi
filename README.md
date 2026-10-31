@@ -70,7 +70,7 @@ Munshi only claims actions that Paytm actually controls. For example, a UPI reve
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the reasoning and the open decisions.
 
-## Repository layout (proposed)
+## Repository layout
 
 ```
 munshi/
@@ -86,9 +86,13 @@ munshi/
     context/        context builder and budgets
     guardrails/     policy engine and risk rules
     mock-world/     bank, UPI, wallet, IRCTC, CRM, tickets, clock
+    eslint-config/  shared ESLint configs
+    typescript-config/ shared tsconfigs
+    ui/             shared React UI stubs for web
   docs/
     policies/       versioned policy documents
-  evals/            scripted scenarios and scoring
+  evals/
+    scenarios/      labelled offline eval cases
 ```
 
 ## Getting started
