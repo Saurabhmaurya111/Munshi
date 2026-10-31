@@ -1,0 +1,62 @@
+.link {
+  display: inline-flex;
+  text-decoration: none;
+  color: inherit;
+}
+
+.logo {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.navy {
+  color: var(--navy);
+}
+
+.navy .leaf {
+  color: var(--teal);
+}
+
+.white {
+  color: #fff;
+}
+
+.white .leaf {
+  color: var(--teal);
+}
+
+.sm {
+  font-size: 1.35rem;
+}
+
+.md {
+  font-size: 1.75rem;
+}
+
+.lg {
+  font-size: clamp(3.4rem, 9vw, 6.5rem);
+}
+
+.i {
+  position: relative;
+  display: inline-block;
+}
+
+.leaf {
+  position: absolute;
+  left: 45%;
+  top: -0.22em;
+  width: 0.42em;
+  height: 0.42em;
+  transform: translateX(-50%) rotate(-18deg);
+}
+
+.sm .i {
+  /* hide native i-dot under leaf */
+  text-shadow: none;
+}
