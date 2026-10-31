@@ -70,6 +70,23 @@ function extractAmount(message: string): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+function extractReferenceEntities(message: string): Record<string, unknown> {
+  const entities: Record<string, unknown> = {};
+  const transactionId = message.match(/\b(txn_[A-Za-z0-9_-]+)\b/i)?.[1];
+  const refundId = message.match(/\b(refund_[A-Za-z0-9_-]+)\b/i)?.[1];
+  const rechargeId = message.match(/\b(rech_[A-Za-z0-9_-]+)\b/i)?.[1];
+  const complaintId = message.match(/\b(cmp_[A-Za-z0-9_-]+)\b/i)?.[1];
+  const rechargeNumber = message.match(/\b([6-9]\d{9})\b/)?.[1];
+
+  if (transactionId) entities.transactionId = transactionId;
+  if (refundId) entities.refundId = refundId;
+  if (rechargeId) entities.transactionId = rechargeId;
+  if (complaintId) entities.complaintId = complaintId;
+  if (rechargeNumber) entities.rechargeNumber = rechargeNumber;
+
+  return entities;
+}
+
 function extractRelativeDate(message: string): string | undefined {
   if (/\byesterday\b|\bkal\b/i.test(message)) {
     return "yesterday";
@@ -77,6 +94,14 @@ function extractRelativeDate(message: string): string | undefined {
 
   if (/\btoday\b|\baaj\b/i.test(message)) {
     return "today";
+  }
+
+  if (/\blast\s*week\b|\bpichhle\s*hafte\b/i.test(message)) {
+    return "last_week";
+  }
+
+  if (/\blast\s*month\b|\bpichhle\s*mahine\b/i.test(message)) {
+    return "last_month";
   }
 
   return undefined;
@@ -130,20 +155,34 @@ export function createRuleBasedClassifier(): IntentClassifier {
         };
       }
 
-      const entities: Record<string, unknown> = {};
+      const entities: Record<string, unknown> = {
+        ...extractReferenceEntities(input.message),
+      };
 
-      if (intents.length === 1) {
-        const amount = extractAmount(input.message);
+      const amount = extractAmount(input.message);
+      if (amount !== undefined) {
+        entities.amount = amount;
+      }
 
-        if (amount !== undefined) {
-          entities.amount = amount;
-        }
+      const relativeDate = extractRelativeDate(input.message);
+      if (relativeDate !== undefined) {
+        entities.relativeDate = relativeDate;
+      }
 
-        const relativeDate = extractRelativeDate(input.message);
-
-        if (relativeDate !== undefined) {
-          entities.relativeDate = relativeDate;
-        }
+      // Demo-friendly default so lookup tools can run without an LLM.
+      const needsLookupFilter =
+        !entities.transactionId &&
+        !entities.refundId &&
+        !entities.rechargeNumber &&
+        !entities.amount &&
+        !entities.relativeDate;
+      if (
+        needsLookupFilter &&
+        intents.some((intent) =>
+          ["UPI_PAYMENT_ISSUE", "REFUND_STATUS", "RECHARGE_ISSUE"].includes(intent),
+        )
+      ) {
+        entities.relativeDate = "last_week";
       }
 
       const classification: RawClassification = {

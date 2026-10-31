@@ -8,7 +8,7 @@ export function Nav() {
       <Logo size="sm" />
       <nav className={styles.links} aria-label="Primary">
         <Link href="/#how">How it works</Link>
-        <Link href="/chat" className={styles.cta}>
+        <Link href="/login" className={styles.cta}>
           Talk to Munshi
         </Link>
       </nav>

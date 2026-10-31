@@ -1,8 +1,8 @@
-/** Tool gateway: validate, guardrail, record intent, call with idempotency key. */
-
-export type IntentState =
-  | "intended"
-  | "sent"
-  | "confirmed"
-  | "failed"
-  | "unknown";
+export type {
+  IntentState,
+  ToolInvocationInput,
+  ToolInvocationResult,
+  ToolInvoker,
+} from "./types.js";
+export { createInvokeTool, idempotencyKeyFor } from "./invoke-tool.js";
+export type { CreateInvokeToolOptions } from "./invoke-tool.js";

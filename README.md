@@ -123,6 +123,40 @@ curl -s -X POST localhost:3001/v1/cases/messages \
 
 Demo auth is the `X-Customer-Id` header (`customer-soham`, `customer-aditya`, `customer-saurabh`). A `customerId` in the body is ignored.
 
+### Worker (B3 + agent turn)
+
+```sh
+npm run dev:worker
+# Claims a runnable case, runs the supervisor (rule-based classifier by default,
+# or Sarvam chat if SARVAM_API_KEY is set), calls read tools via the gateway,
+# appends assistant_message for the customer.
+```
+
+Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500), `SARVAM_API_KEY`, `SARVAM_MODEL` (default `sarvam-105b`).
+
+### Start API + worker + web
+
+```sh
+npm run dev
+# API  http://127.0.0.1:3001
+# Web  http://127.0.0.1:3002/login → /chat
+```
+
+Loads root `.env` for all three. Optional: `NEXT_PUBLIC_API_URL`, `SARVAM_API_KEY`. Web login selects a seeded customer session for `X-Customer-Id`.
+
+Individual apps: `npm run dev:api`, `dev:worker`, `dev:web`.
+
+### Tool gateway (B4)
+
+Read tools run through `@repo/gateway` `createInvokeTool` against seeded `mock_*` rows (scoped by session `customerId`). Writes are rejected until B5.
+
+```sh
+# Integration tests (requires DATABASE_URL + migrated seed)
+npm run test --workspace=@repo/core
+npm run test --workspace=@repo/mock-world
+npm run test --workspace=@repo/gateway
+```
+
 ## Demo scenarios
 
 1. **Known workflow, easy case.** Munshi resolves it alone and tells the customer an honest ETA.

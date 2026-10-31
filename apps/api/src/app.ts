@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { z } from "zod";
 import {
   CoreError,
@@ -42,6 +43,20 @@ function mapCoreError(error: unknown): {
 
 export function createApp(db: Db) {
   const app = new Hono<{ Variables: AppVariables }>();
+
+  app.use(
+    "*",
+    cors({
+      origin: [
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+      ],
+      allowHeaders: ["Content-Type", "X-Customer-Id"],
+      allowMethods: ["GET", "POST", "OPTIONS"],
+    }),
+  );
 
   app.use("*", async (c, next) => {
     c.set("db", db);
