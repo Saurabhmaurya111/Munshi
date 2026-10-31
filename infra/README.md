@@ -1,25 +1,32 @@
 # Infrastructure
 
-Local services for Munshi.
+## Database
 
-## Services
+Apps read `DATABASE_URL` from `.env`. Preferred setup is hosted Postgres (Supabase). Local Docker Postgres is optional.
 
-| Service  | Image                              | Port | Purpose                          |
-| -------- | ---------------------------------- | ---- | -------------------------------- |
-| postgres | `munshi-postgres:17-pgvector` (local build) | 5432 | Cases, events, vectors  |
-| redis    | `public.ecr.aws/docker/library/redis:7-alpine` | 6379 | Cache, rate limits, ephemeral fan-out |
+| Target | How |
+| --- | --- |
+| Supabase (default) | Set `DATABASE_URL` in `.env`, then `npm run db:migrate` |
+| Local Docker | `npm run db:up:local` (profile `local-db`). Schema loads from `postgres/init/` on first empty volume |
 
-Postgres is built from `postgres/Dockerfile` (official Postgres 17 plus the `pgvector` package). Init scripts in `postgres/init/` run once when the data volume is empty.
+Local Postgres image: `munshi-postgres:17-pgvector` from `postgres/Dockerfile`.
+
+## Redis
+
+Always local via Compose for now.
+
+| Service | Image | Port |
+| --- | --- | --- |
+| redis | `public.ecr.aws/docker/library/redis:7-alpine` | 6379 |
 
 ## Commands
 
-From the repo root:
-
 ```sh
-cp .env.example .env   # first time only
-npm run db:up
-npm run db:psql        # interactive shell
+cp .env.example .env          # then put your Supabase DATABASE_URL in .env
+npm run db:up                 # Redis only
+npm run db:migrate            # apply infra/postgres/init/*.sql to DATABASE_URL
+npm run db:up:local           # optional local Postgres + Redis
 npm run db:down
 ```
 
-`DATABASE_URL` and `REDIS_URL` in `.env` are what the apps will use.
+Never commit `.env`. Rotate any password that was pasted into chat or a ticket.

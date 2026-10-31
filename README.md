@@ -97,22 +97,18 @@ munshi/
 
 ## Getting started
 
-### Local services (Postgres + Redis)
+### Database and Redis
 
 ```sh
 cp .env.example .env
-npm run db:up
+# Set DATABASE_URL to your hosted Postgres (Supabase). Use ?sslmode=require.
+npm run db:up        # Redis (local Docker)
+npm run db:migrate   # apply schema to DATABASE_URL
 ```
 
-That starts PostgreSQL with `pgvector` and Redis via Docker Compose. Schema is applied from `infra/postgres/init/` on the first empty volume. See [infra/README.md](./infra/README.md).
+Optional local Postgres: `npm run db:up:local`. See [infra/README.md](./infra/README.md).
 
-```sh
-npm run db:psql    # shell into Postgres
-npm run db:down    # stop
-npm run db:reset   # wipe volumes and recreate
-```
-
-Apps and the mock world are still scaffolded; env vars and the rest of the runnable slice will land with the first API/worker milestones.
+Apps and the mock world are still scaffolded; the rest of the runnable slice lands with the first API/worker milestones.
 
 ## Demo scenarios
 

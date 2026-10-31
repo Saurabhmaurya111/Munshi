@@ -1,5 +1,8 @@
 services:
+  # Local Postgres is optional when DATABASE_URL points at Supabase.
+  # Start with: npm run db:up:local
   postgres:
+    profiles: ["local-db"]
     build:
       context: ./infra/postgres
       dockerfile: Dockerfile
