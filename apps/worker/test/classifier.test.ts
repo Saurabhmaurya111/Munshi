@@ -78,6 +78,30 @@ describe("createLlmClassifier", () => {
     }
   });
 
+  it("falls back to rules when the model finds no intent", async () => {
+    const classifier = createLlmClassifier(async () => ({ intents: [] }), {
+      fallback: createRuleBasedClassifier(),
+      name: "test-llm",
+    });
+
+    const outcome = await classifier.classify(input);
+
+    expect(outcome).toMatchObject({
+      status: "classified",
+      source: "rules",
+      fallbackReason: "llm_no_intents",
+    });
+  });
+
+  it("records the model as the classification source", async () => {
+    const classifier = createLlmClassifier(
+      async () => ({ intents: [{ intent: "REFUND_STATUS", entities: {} }] }),
+      { name: "sarvam:test" },
+    );
+
+    expect(await classifier.classify(input)).toMatchObject({ source: "sarvam:test" });
+  });
+
   it("reports invalid when the model is unavailable and no fallback exists", async () => {
     const classifier = createLlmClassifier(async () => {
       throw new Error("provider down");
@@ -114,6 +138,78 @@ describe("createRuleBasedClassifier", () => {
       expect(outcome.classification.intents).toHaveLength(1);
       expect(outcome.classification.intents[0]?.entities.amount).toBe(500);
     }
+  });
+
+  it("assigns each amount and date to the issue it belongs to", async () => {
+    const outcome = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "My UPI payment of ₹2,000 failed yesterday, and my ₹500 refund has not arrived.",
+    });
+
+    expect(outcome.status).toBe("classified");
+    if (outcome.status !== "classified") return;
+
+    const byIntent = Object.fromEntries(
+      outcome.classification.intents.map((intent) => [intent.intent, intent.entities]),
+    );
+    expect(byIntent.UPI_PAYMENT_ISSUE).toEqual({ amount: 2000, relativeDate: "yesterday" });
+    expect(byIntent.REFUND_STATUS).toEqual({ amount: 500 });
+  });
+
+  it("routes OTP problems to the account agent, not refunds", async () => {
+    const outcome = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "OTP not received, cannot login",
+    });
+
+    expect(outcome.status === "classified" && outcome.classification.intents.map((i) => i.intent))
+      .toEqual(["ACCOUNT_ISSUE"]);
+  });
+
+  it("routes suspected fraud to the account agent", async () => {
+    const outcome = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "Someone hacked me and did a transaction I didn't make",
+    });
+
+    expect(outcome.status).toBe("classified");
+    if (outcome.status === "classified") {
+      expect(outcome.classification.intents.map((i) => i.intent)).toContain("ACCOUNT_ISSUE");
+    }
+  });
+
+  it("continues the pending intent when the reply only contains a reference", async () => {
+    const outcome = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "it is txn_upi_1001",
+      pendingIntents: ["REFUND_STATUS"],
+    });
+
+    expect(outcome.status).toBe("classified");
+    if (outcome.status === "classified") {
+      expect(outcome.classification.intents).toEqual([
+        { intent: "REFUND_STATUS", confidence: 0.7, entities: { transactionId: "txn_upi_1001" } },
+      ]);
+    }
+  });
+
+  it("infers the intent from a bare reference", async () => {
+    const outcome = await createRuleBasedClassifier().classify({ ...input, message: "cmp_9001" });
+
+    expect(outcome.status === "classified" && outcome.classification.intents[0]?.intent).toBe(
+      "COMPLAINT_STATUS",
+    );
+  });
+
+  it("reads a complaint that is still open as a status question", async () => {
+    const outcome = await createRuleBasedClassifier().classify({
+      ...input,
+      message: "my complaint is still open, what is the status?",
+    });
+
+    expect(outcome.status === "classified" && outcome.classification.intents[0]?.intent).toBe(
+      "COMPLAINT_STATUS",
+    );
   });
 
   it("returns invalid when no supported intent matches", async () => {

@@ -59,7 +59,13 @@ export const supervisorRequestSchema = z.object({
     .object({
       facts: z.record(z.string(), z.unknown()).optional(),
       recentEvents: z.array(z.string().min(1).max(2000)).max(50).optional(),
+      pendingIntents: z.array(z.string().min(1).max(64)).max(5).optional(),
     })
+    .optional(),
+  correlationId: z.string().min(1).max(128).optional(),
+  turnId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
 });
 
@@ -79,9 +85,11 @@ export const agentTaskResultSchema = z.object({
     "account_agent",
     "complaint_agent",
   ]),
+  intent: z.string().optional(),
   status: z.enum(["completed", "needs_clarification", "failed", "escalated"]),
   response: z.string(),
   references: z.array(z.string()).optional(),
+  citations: z.array(z.string()).optional(),
   observations: z.array(toolObservationSchema).optional(),
   errorCode: z.string().optional(),
 });
@@ -116,6 +124,7 @@ export const supervisorResponseSchema = z.object({
       ]),
       summary: z.string(),
       references: z.array(z.string()).optional(),
+      citations: z.array(z.string()).optional(),
     }),
   ),
   requiresCustomerInput: z.boolean(),
