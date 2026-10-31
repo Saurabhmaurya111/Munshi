@@ -123,6 +123,28 @@ curl -s -X POST localhost:3001/v1/cases/messages \
 
 Demo auth is the `X-Customer-Id` header (`customer-soham`, `customer-aditya`, `customer-saurabh`). A `customerId` in the body is ignored.
 
+### Worker (B3)
+
+```sh
+npm run dev:worker
+# In another shell, create a message (API above), then the worker claims the case,
+# appends an internal worker_step stub event, and clears runnable.
+# Inspect: GET /v1/cases/:id with x-customer-id (look for type worker_step)
+```
+
+Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500).
+
+### Tool gateway (B4)
+
+Read tools run through `@repo/gateway` `createInvokeTool` against seeded `mock_*` rows (scoped by session `customerId`). Writes are rejected until B5.
+
+```sh
+# Integration tests (requires DATABASE_URL + migrated seed)
+npm run test --workspace=@repo/core
+npm run test --workspace=@repo/mock-world
+npm run test --workspace=@repo/gateway
+```
+
 ## Demo scenarios
 
 1. **Known workflow, easy case.** Munshi resolves it alone and tells the customer an honest ETA.
