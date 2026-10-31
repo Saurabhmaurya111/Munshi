@@ -10,7 +10,12 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres redis",
+    "db:psql": "docker compose exec postgres psql -U munshi -d munshi",
+    "db:reset": "docker compose down -v && docker compose up -d"
   },
   "devDependencies": {
     "prettier": "3.9.6",

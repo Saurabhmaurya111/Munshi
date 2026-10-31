@@ -97,7 +97,22 @@ munshi/
 
 ## Getting started
 
-To be filled in once the first runnable slice exists. It should cover: required services, environment variables, database migrations, starting the mock world, and running the demo scenarios.
+### Local services (Postgres + Redis)
+
+```sh
+cp .env.example .env
+npm run db:up
+```
+
+That starts PostgreSQL with `pgvector` and Redis via Docker Compose. Schema is applied from `infra/postgres/init/` on the first empty volume. See [infra/README.md](./infra/README.md).
+
+```sh
+npm run db:psql    # shell into Postgres
+npm run db:down    # stop
+npm run db:reset   # wipe volumes and recreate
+```
+
+Apps and the mock world are still scaffolded; env vars and the rest of the runnable slice will land with the first API/worker milestones.
 
 ## Demo scenarios
 
