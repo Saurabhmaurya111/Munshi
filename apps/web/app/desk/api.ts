@@ -1,3 +1,4 @@
+import { apiBase } from "../lib/api-base";
 import { readDeskSession } from "../lib/desk-session";
 
 export type DeskQueueItem = {
@@ -36,13 +37,6 @@ export type DeskCaseSnapshot = {
   lastEventSeq: number;
   events: DeskCaseEvent[];
 };
-
-function apiBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://127.0.0.1:3001"
-  );
-}
 
 function agentId(): string {
   const session = readDeskSession();

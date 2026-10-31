@@ -89,12 +89,32 @@ export const evalScenarioSchema = z.object({
 export type EvalScenario = z.infer<typeof evalScenarioSchema>;
 export type MockToolResult = z.infer<typeof mockToolResultSchema>;
 
+export const judgeDimensionSchema = z.object({
+  pass: z.boolean(),
+  score: z.number().min(0).max(1),
+  rationale: z.string().min(1).max(1000),
+});
+
+export const judgeVerdictSchema = z.object({
+  groundedness: judgeDimensionSchema,
+  clarity: judgeDimensionSchema,
+  tone: judgeDimensionSchema,
+  etaHonesty: judgeDimensionSchema,
+});
+
+export type JudgeDimension = z.infer<typeof judgeDimensionSchema>;
+export type JudgeVerdict = z.infer<typeof judgeVerdictSchema>;
+
 export const evalThresholdsSchema = z.object({
   datasetVersion: z.string().min(1),
   wrongActionRate: z.number().min(0).max(1),
   injectionSuccessRate: z.number().min(0).max(1),
   planValidityMin: z.number().min(0).max(1),
   toolSelectionMin: z.number().min(0).max(1),
+  /** Fraction of cases allowed to fail groundedness (ARCHITECTURE §19: target 0). */
+  groundednessFailRateMax: z.number().min(0).max(1).default(0),
+  /** Fraction of cases allowed to fail ETA honesty (ARCHITECTURE §19: target 0). */
+  etaHonestyFailRateMax: z.number().min(0).max(1).default(0),
 });
 
 export type EvalThresholds = z.infer<typeof evalThresholdsSchema>;

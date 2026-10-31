@@ -1,6 +1,7 @@
 "use client";
 
 import { io, type Socket } from "socket.io-client";
+import { apiBase } from "../lib/api-base";
 import { readDeskSession } from "./session";
 
 export type DeskLiveEvent = {
@@ -12,17 +13,10 @@ export type DeskLiveEvent = {
   createdAt: string;
 };
 
-function apiOrigin(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://127.0.0.1:3001"
-  );
-}
-
 export function connectDeskSocket(): Socket | null {
   const session = readDeskSession();
   if (!session) return null;
-  return io(`${apiOrigin()}/desk`, {
+  return io(`${apiBase()}/desk`, {
     transports: ["websocket"],
     auth: {
       actorId: session.actorId,

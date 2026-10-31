@@ -4,19 +4,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Logo } from "../components/Logo";
+import { apiBase } from "../lib/api-base";
 import {
   ACCOUNTS,
   writeSession,
   type SessionCustomer,
 } from "../lib/session";
 import styles from "./login.module.css";
-
-function apiBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://127.0.0.1:3001"
-  );
-}
 
 export function LoginClient() {
   const router = useRouter();
