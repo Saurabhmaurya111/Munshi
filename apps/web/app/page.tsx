@@ -1,101 +1,106 @@
-import Image, { type ImageProps } from "next/image";
-import { Button } from "@repo/ui/button";
+import Image from "next/image";
+import Link from "next/link";
+import { Capabilities } from "./components/Capabilities";
+import { Logo } from "./components/Logo";
+import { Nav } from "./components/Nav";
 import styles from "./page.module.css";
-
-type Props = Omit<ImageProps, "src"> & {
-  srcLight: string;
-  srcDark: string;
-};
-
-const ThemeImage = (props: Props) => {
-  const { srcLight, srcDark, ...rest } = props;
-
-  return (
-    <>
-      <Image {...rest} src={srcLight} className="imgLight" />
-      <Image {...rest} src={srcDark} className="imgDark" />
-    </>
-  );
-};
 
 export default function Home() {
   return (
     <div className={styles.page}>
-      <main className={styles.main}>
-        <ThemeImage
-          className={styles.logo}
-          srcLight="turborepo-dark.svg"
-          srcDark="turborepo-light.svg"
-          alt="Turborepo logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol>
-          <li>
-            Get started by editing <code>apps/web/app/page.tsx</code>
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
-
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new/clone?demo-description=Learn+to+implement+a+monorepo+with+a+two+Next.js+sites+that+has+installed+three+local+packages.&demo-image=%2F%2Fimages.ctfassets.net%2Fe5382hct74si%2F4K8ZISWAzJ8X1504ca0zmC%2F0b21a1c6246add355e55816278ef54bc%2FBasic.png&demo-title=Monorepo+with+Turborepo&demo-url=https%3A%2F%2Fexamples-basic-web.vercel.sh%2F&from=templates&project-name=Monorepo+with+Turborepo&repository-name=monorepo-turborepo&repository-url=https%3A%2F%2Fgithub.com%2Fvercel%2Fturborepo%2Ftree%2Fmain%2Fexamples%2Fbasic&root-directory=apps%2Fdocs&skippable-integrations=1&teamSlug=vercel&utm_source=create-turbo"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            href="https://turborepo.dev/docs?utm_source"
-            target="_blank"
-            rel="noopener noreferrer"
-            className={styles.secondary}
-          >
-            Read our docs
-          </a>
+      <section className={styles.hero} aria-label="Hero">
+        <Nav />
+        <div className={styles.heroCopy}>
+          <Logo href={null} size="lg" />
+          <p className={styles.tagline}>Understands. Plans. Gets it done.</p>
+          <p className={styles.support}>
+            An autonomous teammate for support cases — not another chatbot that
+            answers once and disappears.
+          </p>
+          <div className={styles.ctaRow}>
+            <Link href="/chat" className={styles.primaryCta}>
+              Talk to Munshi
+            </Link>
+            <Link href="/#how" className={styles.ghostCta}>
+              See how it works
+            </Link>
+          </div>
         </div>
-        <Button appName="web" className={styles.secondary}>
-          Open alert
-        </Button>
-      </main>
+        <div className={styles.heroVisual} aria-hidden="true">
+          <Image
+            className={styles.mascot}
+            src="/brand/mascot-hero.png"
+            alt=""
+            width={720}
+            height={900}
+            priority
+          />
+        </div>
+      </section>
+
+      <section className={styles.mission} aria-labelledby="mission-title">
+        <div className={styles.missionInner}>
+          <p className={styles.eyebrow}>Brand mission</p>
+          <h2 id="mission-title" className={styles.missionTitle}>
+            Not just a bot. An autonomous teammate.
+          </h2>
+          <p className={styles.missionCopy}>
+            Munshi figures out the workflow, does the work, records everything,
+            and asks for help only when it should.
+          </p>
+        </div>
+      </section>
+
+      <section className={styles.how} id="how" aria-labelledby="how-title">
+        <div className={styles.howInner}>
+          <p className={styles.eyebrow}>How Munshi works</p>
+          <h2 id="how-title" className={styles.howTitle}>
+            Five moves. One owner for the case.
+          </h2>
+          <Capabilities />
+        </div>
+      </section>
+
+      <section className={styles.invite} aria-labelledby="invite-title">
+        <div className={styles.inviteInner}>
+          <div>
+            <h2 id="invite-title" className={styles.inviteTitle}>
+              Bring Munshi into a case.
+            </h2>
+            <p className={styles.inviteCopy}>
+              Start a chat. Watch it understand, plan, and move — with a clear
+              trail for humans when needed.
+            </p>
+          </div>
+          <Link href="/chat" className={styles.inviteCta}>
+            Open chat
+          </Link>
+        </div>
+        <div className={styles.wave} aria-hidden="true">
+          <div className={styles.waveTrack}>
+            <svg viewBox="0 0 1440 72" preserveAspectRatio="none">
+              <path
+                d="M0 36c120 24 240-24 360 0s240 36 360 0 240-36 360 0 240 36 360 0v36H0z"
+                fill="var(--primary)"
+              />
+            </svg>
+            <svg viewBox="0 0 1440 72" preserveAspectRatio="none">
+              <path
+                d="M0 36c120 24 240-24 360 0s240 36 360 0 240-36 360 0 240 36 360 0v36H0z"
+                fill="var(--primary)"
+              />
+            </svg>
+          </div>
+        </div>
+      </section>
+
       <footer className={styles.footer}>
-        <a
-          href="https://vercel.com/templates?search=turborepo&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          href="https://turborepo.dev?utm_source=create-turbo"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to turborepo.dev →
-        </a>
+        <div className={styles.footerInner}>
+          <Logo href="/" tone="white" size="sm" />
+          <p className={styles.footerNote}>
+            Built for Paytm Devsemble · Autonomous AI Teammates
+          </p>
+        </div>
       </footer>
     </div>
   );
