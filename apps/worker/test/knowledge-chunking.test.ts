@@ -92,6 +92,63 @@ describe("chunkPolicyText", () => {
     );
   });
 
+  it("starts a new chunk at each level-two heading", () => {
+    const text = [
+      "# UPI help",
+      "",
+      "Policy scope.",
+      "",
+      "## Payment failed",
+      "",
+      "Retry after verification.",
+      "",
+      "## Refund not received",
+      "",
+      "Check the refund status.",
+    ].join("\n");
+
+    const chunks = chunkPolicyText(text);
+
+    expect(chunks.map((chunk) => chunk.content.split("\n")[0])).toEqual([
+      "# UPI help",
+      "## Payment failed",
+      "## Refund not received",
+    ]);
+  });
+
+  it("repeats the heading when a section is split", () => {
+    const sentence =
+      "Refund records must be checked against the authoritative system before support replies.";
+    const text = [
+      "# Refund help",
+      "",
+      "## Refund not received",
+      "",
+      Array.from({ length: 6 }, () => sentence).join(" "),
+    ].join("\n");
+
+    const chunks = chunkPolicyText(text, { maxChars: 120, overlapChars: 20 });
+    const sectionChunks = chunks.filter((chunk) =>
+      chunk.content.startsWith("## "),
+    );
+
+    expect(sectionChunks.length).toBeGreaterThan(1);
+    sectionChunks.forEach((chunk) => {
+      expect(chunk.content.startsWith("## Refund not received\n\n")).toBe(true);
+      expect(chunk.content.length).toBeLessThanOrEqual(120);
+    });
+  });
+
+  it("keeps level-three headings inside a section", () => {
+    const text =
+      "# Doc\n\n## Payment failed\n\n### Details\n\nVerify the transaction status.";
+
+    const chunks = chunkPolicyText(text);
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[1]?.content).toContain("### Details");
+  });
+
   it("rejects unsafe options", () => {
     expect(() => chunkPolicyText("text", { maxChars: 10 })).toThrow(RangeError);
     expect(() =>
