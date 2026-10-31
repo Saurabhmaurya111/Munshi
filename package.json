@@ -17,6 +17,7 @@
     "check-types": "turbo run check-types",
     "test": "turbo run test",
     "eval": "npm run test --workspace=worker -- test/evals",
+    "eval:judge": "EVAL_LLM_JUDGE=1 npm run test --workspace=worker -- test/evals",
     "db:up": "docker compose up -d redis",
     "db:up:local": "docker compose --profile local-db up -d",
     "db:down": "docker compose --profile local-db down",

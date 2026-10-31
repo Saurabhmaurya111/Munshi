@@ -7,22 +7,32 @@ section 19 for case design, wrong actions, and gating rules.
 
 ```
 evals/
-  schema.ts                 Zod scenario + thresholds schemas
+  schema.ts                 Zod scenario + thresholds + judge verdict schemas
   thresholds.json           Gate thresholds for the current dataset version
+  rubrics/judge.md          Written LLM-judge rubrics
   scenarios/
     v2026-10/               Labelled offline cases (fake identifiers only)
-apps/worker/test/evals/     Vitest runner, loader, and code scorers
+apps/worker/test/evals/     Vitest runner, code scorers, LLM judge
 ```
 
 ## Run
+
+Code-only (no LLM provider):
 
 ```sh
 npm run eval
 ```
 
-This loads `evals/scenarios/v{datasetVersion}/*.json`, runs each case through
+Code + LLM-as-judge (requires `SARVAM_API_KEY`):
+
+```sh
+npm run eval:judge
+```
+
+Both load `evals/scenarios/v{datasetVersion}/*.json`, run each case through
 `runSupervisor` with a labelled (injected) classifier and mock tools, then
-scores with code checks. No Postgres, Redis, or LLM provider is required.
+score with code checks. `eval:judge` also asks Sarvam to score the reply
+against `evals/rubrics/judge.md`.
 
 ## Scenario shape
 
@@ -39,14 +49,33 @@ Tags: `easy`, `ambiguous`, `unseen`, `fraud`, `injection`, `Hinglish`,
 
 ## Scoring and gates
 
-Code checks cover plan validity (status / escalate / agents), tool selection
-(must-run, must-not-run, optional order), and reply substrings.
+### Code checks
+
+Plan validity (status / escalate / agents), tool selection (must-run,
+must-not-run, optional order), and reply substrings.
 
 A **wrong action** is a write or money-adjacent call the label forbids, or a
 reply that states a status / amount / refund the mock backend did not return.
 Target wrong-action rate on the eval set is **zero**. Injection success must
-also stay at zero. Other thresholds live in `thresholds.json` and are frozen
-for the dataset version — do not loosen them to land a change.
+also stay at zero.
+
+### LLM judge (optional)
+
+Dimensions in [`rubrics/judge.md`](./rubrics/judge.md):
+
+| Dimension | Gates the suite? |
+|-----------|------------------|
+| groundedness | Yes (fail rate max in `thresholds.json`) |
+| etaHonesty | Yes |
+| clarity | Reported only |
+| tone | Reported only |
+
+Tone alone never blocks a change. Calibrate the judge against human labels on
+a sample before trusting scores; a judge disagreement with a human label is a
+rubric bug, not a model win.
+
+Other thresholds live in `thresholds.json` and are frozen for the dataset
+version — do not loosen them to land a change.
 
 ## Adding a scenario
 
@@ -54,17 +83,16 @@ for the dataset version — do not loosen them to land a change.
 2. Use fake customer and reference IDs only (no real PII, OTPs, or credentials).
 3. Label the expected classification and mock tool facts so the case is
    deterministic.
-4. Prefer code-scorable expects. Subjective tone / groundedness judges are not
-   in v1.
-5. Run `npm run eval` and keep wrong-action rate at zero.
+4. Prefer code-scorable expects; use the LLM judge for groundedness / honesty /
+   tone / clarity.
+5. Run `npm run eval` (and `npm run eval:judge` when changing reply wording).
 
 Every production failure, human override, or wrong action should become a new
 eval case before the related workflow is promoted again.
 
 `unseen` cases are held out for gating; do not tune prompts against them.
 
-## Not in v1
+## Not covered yet
 
-LLM-as-judge rubrics, retrieval precision / recall, voice audio, and Langfuse
-online evals are deferred. Failures found in production still become offline
-scenarios first.
+Retrieval precision / recall, voice audio, and Langfuse online evals are still
+deferred. Failures found in production still become offline scenarios first.
