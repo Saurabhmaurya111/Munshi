@@ -8,10 +8,9 @@ export function loadEnv(): ApiEnv {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");
   }
-  // Render / cloud hosts inject PORT; keep API_PORT for local.
-  const port = Number(process.env.PORT ?? process.env.API_PORT ?? "3001");
+  const port = Number(process.env.API_PORT ?? "3001");
   if (!Number.isFinite(port) || port <= 0) {
-    throw new Error("PORT / API_PORT must be a positive number");
+    throw new Error("API_PORT must be a positive number");
   }
   return { databaseUrl, port };
 }

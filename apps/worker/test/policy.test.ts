@@ -36,11 +36,8 @@ describe("evaluateToolPolicy", () => {
 });
 
 describe("evaluateReplyPolicy", () => {
-  it("holds the customer reply at level 0", () => {
-    expect(evaluateReplyPolicy(0).decision).toBe("hold_for_approval");
-  });
-
-  it("allows the customer reply from level 1", () => {
+  it("allows the customer reply at every workflow level", () => {
+    expect(evaluateReplyPolicy(0).decision).toBe("allow");
     expect(evaluateReplyPolicy(1).decision).toBe("allow");
     expect(evaluateReplyPolicy(2).decision).toBe("allow");
   });

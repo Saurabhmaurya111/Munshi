@@ -1,0 +1,57 @@
+{
+  "id": "refund-risk-repeat-claim-escalate",
+  "version": "2026-10",
+  "tags": ["fraud", "ambiguous"],
+  "input": {
+    "message": "Please issue another refund for this payment to my bank account now.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-refund-02",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "REFUND_STATUS",
+        "entities": {
+          "refundId": "refund_5001",
+          "transactionId": "txn_upi_1001"
+        }
+      }
+    ]
+  },
+  "mockTools": {
+    "getRefundStatus": {
+      "state": "confirmed",
+      "data": {
+        "refunds": [
+          {
+            "refundId": "refund_old_1",
+            "transactionId": "txn_upi_1001",
+            "amountPaise": 200000,
+            "status": "completed",
+            "reason": "Merchant reversal completed"
+          },
+          {
+            "refundId": "refund_5001",
+            "transactionId": "txn_upi_1001",
+            "amountPaise": 200000,
+            "status": "delayed",
+            "reason": "Customer asked again after completed credit"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": "escalated",
+    "agents": ["refund_agent"],
+    "toolsMustRun": ["getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": true,
+    "replyMustMatch": ["HIGH", "completed", "desk"],
+    "replyMustNotMatch": ["I have issued", "refunded successfully"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

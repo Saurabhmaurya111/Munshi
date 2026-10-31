@@ -1243,6 +1243,8 @@ export async function requestWriteApproval(
     stepId: string;
     tool: string;
     intentId?: string;
+    /** Validated tool args — required so desk approve can execute without a prior invoke. */
+    args?: Record<string, unknown>;
     message?: string;
     /** Snapshotted when parked — mid-flight promote must not rewrite or auto-run. */
     workflowName?: string;
@@ -1262,6 +1264,23 @@ export async function requestWriteApproval(
     const workflowName = input.workflowName ?? "default";
     const workflowLevel =
       input.workflowLevel === undefined ? null : input.workflowLevel;
+
+    // Park the write intent here when the worker held before invoke (L0/L1).
+    await client.query(
+      `INSERT INTO action_intents (
+         case_id, step_id, tool, idempotency_key, state, args, result
+       ) VALUES (
+         $1, $2, $3, $4, 'intended', $5::jsonb, NULL
+       )
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+      [
+        input.caseId,
+        input.stepId,
+        input.tool,
+        `${input.caseId}:${input.stepId}`,
+        JSON.stringify(input.args ?? {}),
+      ],
+    );
 
     let nextSeq = Number(caseRow.last_event_seq) + 1;
     const deskEvent = await appendEvent(client, {

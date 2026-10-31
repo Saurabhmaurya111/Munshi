@@ -252,6 +252,13 @@ export async function processClaimedCase(
       releaseLease: false,
     });
 
+    const parkedArgs =
+      approvalTask.data.args &&
+      typeof approvalTask.data.args === "object" &&
+      !Array.isArray(approvalTask.data.args)
+        ? (approvalTask.data.args as Record<string, unknown>)
+        : {};
+
     await requestWriteApproval(db, {
       caseId: caseRow.id,
       stepId: String(approvalTask.data.stepId),
@@ -260,6 +267,7 @@ export async function processClaimedCase(
         typeof approvalTask.data.intentId === "string"
           ? approvalTask.data.intentId
           : undefined,
+      args: parkedArgs,
       message: response.message,
       workflowName: workflow.name,
       workflowLevel: workflow.level,

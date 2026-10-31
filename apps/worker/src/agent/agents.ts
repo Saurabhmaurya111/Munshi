@@ -463,6 +463,21 @@ async function execute(task: AgentTask, context: AgentRunContext): Promise<Draft
     }
 
     const stepId = `${context.turnId ? `${context.turnId}:` : ""}${task.taskId}:${index}:${step.tool}`;
+
+    // L0 / L1 writes: park for desk without executing; args go on the intent.
+    if (policy.decision === "hold_for_approval") {
+      return {
+        status: "escalated",
+        response: `To ${task.intent === "COMPLAINT_CREATE" ? "raise a complaint" : "do this"}, I need approval from our support team first. Your request is recorded on this case, and you'll get the reference once it's done.`,
+        errorCode: "APPROVAL_REQUIRED",
+        data: {
+          stepId,
+          tool: step.tool,
+          args: validated.data as Record<string, unknown>,
+        },
+      };
+    }
+
     const result = await context.tools.invoke({
       caseId: context.caseId,
       stepId,
@@ -472,29 +487,22 @@ async function execute(task: AgentTask, context: AgentRunContext): Promise<Draft
       workflowLevel: context.workflowLevel,
     });
 
-    if (
-      policy.decision === "hold_for_approval" ||
-      result.state === "pending_approval"
-    ) {
+    if (result.state === "pending_approval") {
       return {
         status: "escalated",
         response: `To ${task.intent === "COMPLAINT_CREATE" ? "raise a complaint" : "do this"}, I need approval from our support team first. Your request is recorded on this case, and you'll get the reference once it's done.`,
         errorCode: "APPROVAL_REQUIRED",
-        observations:
-          result.state === "pending_approval"
-            ? [
-                {
-                  tool: step.tool,
-                  state: "failed" as const,
-                  errorCode: "APPROVAL_REQUIRED",
-                },
-              ]
-            : undefined,
+        observations: [
+          {
+            tool: step.tool,
+            state: "failed" as const,
+            errorCode: "APPROVAL_REQUIRED",
+          },
+        ],
         data: {
           stepId,
           tool: step.tool,
-          intentId:
-            result.state === "pending_approval" ? result.intentId : undefined,
+          intentId: result.intentId,
         },
       };
     }

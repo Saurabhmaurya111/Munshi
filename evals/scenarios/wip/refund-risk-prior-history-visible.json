@@ -1,0 +1,55 @@
+{
+  "id": "refund-risk-prior-history-visible",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "Where is my refund refund_5001?",
+    "authenticatedContext": {
+      "customerId": "customer-eval-refund-01",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "REFUND_STATUS",
+        "entities": { "refundId": "refund_5001" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getRefundStatus": {
+      "state": "confirmed",
+      "data": {
+        "refunds": [
+          {
+            "refundId": "refund_wal_6001",
+            "transactionId": "txn_wal_4002",
+            "amountPaise": 15000,
+            "status": "completed",
+            "reason": "Wallet spend reversal credited"
+          },
+          {
+            "refundId": "refund_5001",
+            "transactionId": "txn_upi_1001",
+            "amountPaise": 200000,
+            "status": "delayed",
+            "reason": "Beneficiary bank reversal not confirmed",
+            "expectedBy": "2026-11-03"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "agents": ["refund_agent"],
+    "toolsMustRun": ["getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["delayed", "refund_wal_6001", "LOW"],
+    "replyMustNotMatch": ["issued a new refund", "refunded to your bank"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}
