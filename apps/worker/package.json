@@ -10,7 +10,8 @@
     "lint": "eslint . --max-warnings 0",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "knowledge:ingest": "tsx --env-file=../../.env src/knowledge/ingest-cli.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.1.18",

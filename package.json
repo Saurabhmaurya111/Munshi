@@ -19,7 +19,8 @@
     "db:psql": "docker compose exec postgres psql -U munshi -d munshi",
     "db:reset": "docker compose --profile local-db down -v && docker compose --profile local-db up -d",
     "db:migrate": "node --env-file=.env scripts/db-migrate.mjs",
-    "redis:ping": "node --env-file=.env scripts/redis-ping.mjs"
+    "redis:ping": "node --env-file=.env scripts/redis-ping.mjs",
+    "knowledge:ingest": "npm run knowledge:ingest --workspace=worker"
   },
   "devDependencies": {
     "prettier": "3.9.6",

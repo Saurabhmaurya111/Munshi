@@ -127,6 +127,28 @@ export function createOpenAiEmbeddingProvider(
   };
 }
 
+export type NamedEmbeddingProvider = EmbeddingProvider & { name: string };
+
+/**
+ * OpenAI when OPENAI_API_KEY is set, otherwise the offline hashing embedder.
+ * Ingestion and retrieval must use the same provider; re-ingest after switching.
+ */
+export function createEmbeddingProviderFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): NamedEmbeddingProvider {
+  const apiKey = env.OPENAI_API_KEY?.trim();
+
+  if (apiKey) {
+    const model = env.OPENAI_EMBEDDING_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
+    return {
+      name: `openai:${model}`,
+      ...createOpenAiEmbeddingProvider({ apiKey, model, baseUrl: env.OPENAI_BASE_URL?.trim() || undefined }),
+    };
+  }
+
+  return { name: "deterministic-hash-v1", ...createDeterministicEmbeddingProvider() };
+}
+
 function hashToken(token: string): number {
   let hash = 2166136261;
 

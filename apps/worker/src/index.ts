@@ -2,7 +2,8 @@ import { pathToFileURL } from "node:url";
 import { createDb } from "@repo/core";
 import { loadEnv } from "./env.js";
 import { runWorkerLoop } from "./loop.js";
-import { createWorkerDependencies } from "./runtime.js";
+import { createEmbeddingProviderFromEnv } from "./knowledge/embedding.js";
+import { createWorkerDependencies, describeAnswer, describeClassifier } from "./runtime.js";
 
 export * from "./agent/index.js";
 export * from "./knowledge/index.js";
@@ -37,7 +38,9 @@ async function main() {
       workerId: env.workerId,
       leaseMs: env.leaseMs,
       pollMs: env.pollMs,
-      classifier: process.env.SARVAM_API_KEY?.trim() ? "sarvam+rules" : "rules",
+      classifier: describeClassifier(),
+      answer: describeAnswer(),
+      embedder: createEmbeddingProviderFromEnv().name,
     }),
   );
 

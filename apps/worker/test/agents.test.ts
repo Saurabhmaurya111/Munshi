@@ -30,7 +30,7 @@ describe("createAgentRunner", () => {
     const result = await runner(makeTask(), context(invoker));
 
     expect(result.status).toBe("completed");
-    expect(result.response).toContain('returned status "success"');
+    expect(result.response).toContain("(TXN12345) was successful");
     expect(result.references).toContain("TXN12345");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.tool).toBe("getTransactionStatus");
@@ -179,6 +179,175 @@ describe("createAgentRunner", () => {
     expect(result.status).toBe("escalated");
     expect(result.errorCode).toBe("DEPENDENCY_NOT_SATISFIED");
     expect(calls).toHaveLength(0);
+  });
+
+  it("scopes step ids to the turn so a new message is not served an old result", async () => {
+    const { invoker, calls } = createFakeInvoker({
+      getTransactionStatus: () => confirmed({ status: "success", transactionId: "TXN12345" }),
+    });
+    const runner = createAgentRunner();
+
+    await runner(makeTask(), context(invoker, { turnId: "m1" }));
+    await runner(makeTask(), context(invoker, { turnId: "m4" }));
+
+    expect(calls.map((call) => call.stepId)).toEqual([
+      "m1:task-1:0:getTransactionStatus",
+      "m4:task-1:0:getTransactionStatus",
+    ]);
+  });
+
+  it("references refunds by refund id", async () => {
+    const { invoker } = createFakeInvoker({
+      getRefundStatus: () =>
+        confirmed({
+          refunds: [
+            { refundId: "refund_1", transactionId: "txn_1", status: "delayed" },
+            { refundId: "refund_2", transactionId: "txn_2", status: "processing" },
+          ],
+        }),
+    });
+
+    const result = await createAgentRunner()(
+      makeTask({
+        intent: "REFUND_STATUS",
+        agent: "refund_agent",
+        domain: "refund",
+        entities: { relativeDate: "last_month" },
+      }),
+      context(invoker, { message: "refund not received" }),
+    );
+
+    expect(result.references).toEqual(["refund_1", "refund_2"]);
+  });
+
+  it("asks for a reference when the backend has no matching record", async () => {
+    const { invoker } = createFakeInvoker({
+      getRefundStatus: () => ({ state: "failed", errorCode: "NOT_FOUND", message: "none" }),
+    });
+
+    const result = await createAgentRunner()(
+      makeTask({
+        intent: "REFUND_STATUS",
+        agent: "refund_agent",
+        domain: "refund",
+        entities: { refundId: "refund_404" },
+      }),
+      context(invoker),
+    );
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.errorCode).toBe("NOT_FOUND");
+    expect(result.response).toContain("couldn't find a matching refund");
+  });
+
+  it("retries a lookup on amount alone when the date filter finds nothing", async () => {
+    const { invoker, calls } = createFakeInvoker({
+      getTransactions: (call) =>
+        call.args.relativeDate
+          ? confirmed({ transactions: [] })
+          : confirmed({
+              transactions: [{ transactionId: "txn_1", amountPaise: 200000, status: "failed" }],
+            }),
+    });
+
+    const result = await createAgentRunner()(
+      makeTask({ entities: { amount: 2000, relativeDate: "yesterday" } }),
+      context(invoker),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(result.references).toEqual(["txn_1"]);
+    expect(calls.map((call) => call.args)).toEqual([
+      { amount: 2000, relativeDate: "yesterday" },
+      { amount: 2000 },
+    ]);
+    expect(new Set(calls.map((call) => call.stepId)).size).toBe(2);
+  });
+
+  it("asks the customer to pick when several records match", async () => {
+    const { invoker } = createFakeInvoker({
+      getTransactions: () =>
+        confirmed({
+          transactions: [
+            { transactionId: "txn_a", amountPaise: 1000, status: "success" },
+            { transactionId: "txn_b", amountPaise: 2000, status: "success" },
+          ],
+        }),
+    });
+
+    const result = await createAgentRunner()(
+      makeTask({ entities: { relativeDate: "last_week" } }),
+      context(invoker, { message: "question about my payment" }),
+    );
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.errorCode).toBe("MULTIPLE_MATCHES");
+    expect(result.references).toEqual(["txn_a", "txn_b"]);
+  });
+
+  it("escalates verified reads when fraud is suspected", async () => {
+    const { invoker } = createFakeInvoker({
+      getTransactionStatus: () => confirmed({ transactionId: "TXN12345", status: "success" }),
+    });
+
+    const result = await createAgentRunner()(
+      makeTask(),
+      context(invoker, { risk: { fraudSuspected: true, sharedSecret: false } }),
+    );
+
+    expect(result.status).toBe("escalated");
+    expect(result.errorCode).toBe("FRAUD_SUSPECTED");
+    expect(result.references).toContain("TXN12345");
+  });
+
+  it("attaches policy citations and survives a retrieval failure", async () => {
+    const { invoker } = createFakeInvoker({
+      getAccountSupportStatus: () => confirmed({ kycStatus: "verified" }),
+    });
+    const task = makeTask({
+      intent: "ACCOUNT_ISSUE",
+      agent: "account_agent",
+      domain: "account",
+      entities: {},
+    });
+
+    const grounded = await createAgentRunner()(
+      task,
+      context(invoker, {
+        knowledge: async ({ category }) => [
+          {
+            documentId: `policy-${category}`,
+            documentTitle: "Account help",
+            documentVersion: "2026-10",
+            chunkIndex: 2,
+            content: "## OTP not received",
+            score: 0.8,
+          },
+        ],
+      }),
+    );
+
+    expect(grounded.status).toBe("completed");
+    expect(grounded.citations).toEqual(["policy-account@2026-10#2"]);
+    expect(grounded.passages).toEqual([
+      {
+        citation: "policy-account@2026-10#2",
+        title: "Account help",
+        content: "## OTP not received",
+      },
+    ]);
+
+    const ungrounded = await createAgentRunner()(
+      task,
+      context(invoker, {
+        knowledge: async () => {
+          throw new Error("db down");
+        },
+      }),
+    );
+
+    expect(ungrounded.status).toBe("completed");
+    expect(ungrounded.citations).toBeUndefined();
   });
 
   it("refuses a tool that is not allowed for the agent", async () => {

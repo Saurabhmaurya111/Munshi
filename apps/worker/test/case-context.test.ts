@@ -49,6 +49,58 @@ describe("buildSupervisorRequest", () => {
     });
   });
 
+  it("carries pending intents from the previous turn's worker step", () => {
+    const result = buildSupervisorRequest({
+      caseId: "case-1",
+      customerId: "customer-1",
+      correlationId: "corr-1",
+      events: [
+        event("customer_message", "customer", "My refund is late"),
+        {
+          type: "worker_step",
+          audience: "internal",
+          payload: { trace: { pendingIntents: ["REFUND_STATUS"] } },
+        },
+        event("assistant_message", "customer", "Which refund?"),
+        event("customer_message", "customer", "refund_5001"),
+      ],
+    });
+
+    expect(result.ok && result.request.context?.pendingIntents).toEqual(["REFUND_STATUS"]);
+    expect(result.ok && result.request.correlationId).toBe("corr-1");
+  });
+
+  it("derives the turn id from the triggering customer event", () => {
+    const result = buildSupervisorRequest({
+      caseId: "case-1",
+      customerId: "customer-1",
+      events: [
+        { ...event("customer_message", "customer", "first"), seq: "1" },
+        { ...event("customer_message", "customer", "second"), seq: "4" },
+      ],
+    });
+
+    expect(result.ok && result.request.turnId).toBe("m4");
+  });
+
+  it("does not carry pending intents across an unanswered customer message", () => {
+    const result = buildSupervisorRequest({
+      caseId: "case-1",
+      customerId: "customer-1",
+      events: [
+        {
+          type: "worker_step",
+          audience: "internal",
+          payload: { trace: { pendingIntents: ["REFUND_STATUS"] } },
+        },
+        event("customer_message", "customer", "first"),
+        event("customer_message", "customer", "second"),
+      ],
+    });
+
+    expect(result.ok && result.request.context?.pendingIntents).toBeUndefined();
+  });
+
   it("returns a missing message result when no customer message exists", () => {
     const result = buildSupervisorRequest({
       caseId: "case-1",

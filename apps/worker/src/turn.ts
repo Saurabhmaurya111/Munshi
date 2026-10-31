@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   appendEventWithEpoch,
   listCaseEvents,
@@ -7,7 +8,7 @@ import {
 } from "@repo/core";
 import { buildSupervisorRequest } from "./agent/case-context.js";
 import {
-  runSupervisor,
+  runSupervisorWithTrace,
   type SupervisorDependencies,
 } from "./agent/supervisor.js";
 
@@ -32,11 +33,13 @@ export async function processClaimedCase(
   input: ProcessClaimInput,
 ): Promise<ProcessClaimResult> {
   const { db, caseRow, heldEpoch, workerId, dependencies } = input;
+  const correlationId = randomUUID();
   const events = await listCaseEvents(db, { caseId: caseRow.id, limit: 100 });
   const built = buildSupervisorRequest({
     caseId: caseRow.id,
     customerId: caseRow.customerId,
     events,
+    correlationId,
   });
 
   if (!built.ok) {
@@ -52,7 +55,7 @@ export async function processClaimedCase(
     };
   }
 
-  const response = await runSupervisor(built.request, dependencies);
+  const { response, trace } = await runSupervisorWithTrace(built.request, dependencies);
 
   await appendEventWithEpoch(db, {
     caseId: caseRow.id,
@@ -61,9 +64,11 @@ export async function processClaimedCase(
     audience: "internal",
     payload: {
       workerId,
+      correlationId,
       status: response.status,
       tasks: response.tasks,
       requiresCustomerInput: response.requiresCustomerInput,
+      trace,
     },
     releaseLease: false,
   });
