@@ -90,9 +90,13 @@ export function latestAssistantText(
   const replies = events.filter(
     (event) =>
       event.seq > afterSeq &&
-      event.type === "assistant_message" &&
+      (event.type === "assistant_message" || event.type === "status") &&
       typeof event.payload.text === "string",
   );
   const last = replies[replies.length - 1];
   return last ? String(last.payload.text) : null;
+}
+
+export function apiOrigin(): string {
+  return apiBase();
 }

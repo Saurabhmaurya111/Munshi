@@ -22,6 +22,7 @@ import {
   latestAssistantText,
   postCustomerMessage,
 } from "./api";
+import { connectCustomerSocket, subscribeCase } from "./socket";
 import styles from "./chat.module.css";
 
 type Role = "munshi" | "user" | "system";
@@ -90,18 +91,62 @@ export function ChatClient() {
     conversationId: string,
     afterSeq: number,
   ): Promise<string> {
-    const started = Date.now();
-    while (Date.now() - started < POLL_TIMEOUT_MS) {
-      const snapshot = await getCase(conversationId);
-      const text = latestAssistantText(snapshot.events, afterSeq);
-      if (text) {
-        return text;
+    const socket = connectCustomerSocket();
+    let lastSeq = afterSeq;
+    let settled = false;
+
+    const viaSocket = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!settled) reject(new Error("socket_timeout"));
+      }, POLL_TIMEOUT_MS);
+
+      const stop = subscribeCase(socket, conversationId, afterSeq, (event) => {
+        lastSeq = Math.max(lastSeq, event.seq);
+        if (
+          (event.type === "assistant_message" || event.type === "status") &&
+          typeof event.payload.text === "string" &&
+          event.seq > afterSeq
+        ) {
+          settled = true;
+          clearTimeout(timer);
+          stop();
+          resolve(String(event.payload.text));
+        }
+      });
+
+      socket.on("connect_error", () => {
+        // Fall through to HTTP poll.
+      });
+    });
+
+    const viaPoll = (async () => {
+      const started = Date.now();
+      while (Date.now() - started < POLL_TIMEOUT_MS) {
+        if (settled) {
+          throw new Error("settled");
+        }
+        const snapshot = await getCase(conversationId);
+        const text = latestAssistantText(snapshot.events, afterSeq);
+        if (text) {
+          settled = true;
+          return text;
+        }
+        await sleep(POLL_MS);
       }
-      await sleep(POLL_MS);
+      throw new Error(
+        "Munshi is taking longer than usual. Please try again in a moment.",
+      );
+    })();
+
+    try {
+      return await Promise.any([viaSocket, viaPoll]);
+    } catch {
+      throw new Error(
+        "Munshi is taking longer than usual. Please try again in a moment.",
+      );
+    } finally {
+      socket.disconnect();
     }
-    throw new Error(
-      "Munshi is taking longer than usual. Please try again in a moment.",
-    );
   }
 
   async function pushUser(text: string) {

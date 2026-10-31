@@ -7,8 +7,8 @@ const describeDb = databaseUrl ? describe : describe.skip;
 
 describeDb("mock-world read handlers", () => {
   const pool = new pg.Pool({
-    connectionString: databaseUrl,
-    ssl: databaseUrl!.includes("localhost")
+    connectionString: databaseUrl!,
+    ssl: databaseUrl?.includes("localhost")
       ? undefined
       : { rejectUnauthorized: false },
   });

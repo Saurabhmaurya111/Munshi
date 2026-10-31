@@ -27,3 +27,27 @@ export {
   releaseCase,
 } from "./leases.js";
 export type { ClaimResult } from "./leases.js";
+
+export {
+  advanceVirtualClock,
+  getVirtualNow,
+  scheduleExternalWait,
+  setVirtualClock,
+  wakeDueCases,
+} from "./clock.js";
+
+export {
+  applyDeskCommand,
+  getCaseById,
+  listCaseEventsAfter,
+  requestWriteApproval,
+} from "./desk.js";
+export type {
+  ApplyDeskCommandInput,
+  ApplyDeskCommandResult,
+  DeskActor,
+  DeskCommandType,
+} from "./desk.js";
+
+export { notifyCaseEvent, onCaseEvent } from "./notify.js";
+export type { CaseEventNotice } from "./notify.js";

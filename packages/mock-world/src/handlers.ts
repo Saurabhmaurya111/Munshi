@@ -4,6 +4,7 @@ import {
   throwIfAborted,
   type RelativeDate,
 } from "./filters.js";
+import { recordToolOutcome } from "./outcomes.js";
 import type { HandlerResult, Queryable, ToolHandler } from "./types.js";
 
 type TxnRow = {
@@ -65,6 +66,7 @@ type ComplaintRow = {
   details: unknown;
   related_txn_id: string | null;
   related_refund_id: string | null;
+  escalated_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -371,6 +373,141 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     };
   };
 
+  const createComplaint: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+    idempotencyKey,
+  }) => {
+    throwIfAborted(signal);
+    const category = String(args.category ?? "complaint");
+    const summary = String(args.summary ?? "").trim();
+    if (!summary) {
+      return { ok: false, errorCode: "INVALID_ARGS", message: "summary required" };
+    }
+    const id = `cmp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const result = await db.query<ComplaintRow>(
+      `INSERT INTO mock_complaints (id, customer_id, category, status, summary)
+       VALUES ($1, $2, $3, 'open', $4)
+       RETURNING *`,
+      [id, customerId, category, summary],
+    );
+    throwIfAborted(signal);
+    const row = result.rows[0];
+    if (!row) {
+      return { ok: false, errorCode: "WRITE_FAILED", message: "Failed to create complaint" };
+    }
+    const data = {
+      complaintId: row.id,
+      customerId: row.customer_id,
+      category: row.category,
+      status: row.status,
+      summary: row.summary,
+      createdAt: row.created_at.toISOString(),
+    };
+    if (idempotencyKey) {
+      await recordToolOutcome(db, {
+        idempotencyKey,
+        tool: "createComplaint",
+        customerId,
+        state: "confirmed",
+        data,
+      });
+    }
+    return { ok: true, data };
+  };
+
+  const addComplaintDetails: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+    idempotencyKey,
+  }) => {
+    throwIfAborted(signal);
+    const complaintId = String(args.complaintId ?? "");
+    const details = String(args.details ?? "").trim();
+    const existing = await db.query<ComplaintRow>(
+      `SELECT * FROM mock_complaints
+       WHERE id = $1 AND customer_id = $2
+       LIMIT 1`,
+      [complaintId, customerId],
+    );
+    throwIfAborted(signal);
+    const row = existing.rows[0];
+    if (!row) return notFound("complaint");
+
+    const nextDetails = Array.isArray(row.details) ? [...row.details] : [];
+    nextDetails.push({ at: new Date().toISOString(), note: details });
+    const updated = await db.query<ComplaintRow>(
+      `UPDATE mock_complaints
+       SET details = $3::jsonb, updated_at = now()
+       WHERE id = $1 AND customer_id = $2
+       RETURNING *`,
+      [complaintId, customerId, JSON.stringify(nextDetails)],
+    );
+    const out = updated.rows[0];
+    if (!out) return notFound("complaint");
+    const data = {
+      complaintId: out.id,
+      status: out.status,
+      details: out.details,
+      updatedAt: out.updated_at.toISOString(),
+    };
+    if (idempotencyKey) {
+      await recordToolOutcome(db, {
+        idempotencyKey,
+        tool: "addComplaintDetails",
+        customerId,
+        state: "confirmed",
+        data,
+      });
+    }
+    return { ok: true, data };
+  };
+
+  const escalateComplaint: ToolHandler = async ({
+    customerId,
+    args,
+    signal,
+    idempotencyKey,
+  }) => {
+    throwIfAborted(signal);
+    const complaintId = String(args.complaintId ?? "");
+    const reason = String(args.reason ?? "").trim();
+    const updated = await db.query<ComplaintRow>(
+      `UPDATE mock_complaints
+       SET status = 'escalated',
+           details = details || $3::jsonb,
+           escalated_at = now(),
+           updated_at = now()
+       WHERE id = $1 AND customer_id = $2
+       RETURNING *`,
+      [
+        complaintId,
+        customerId,
+        JSON.stringify([{ at: new Date().toISOString(), note: `escalated: ${reason}` }]),
+      ],
+    );
+    throwIfAborted(signal);
+    const row = updated.rows[0];
+    if (!row) return notFound("complaint");
+    const data = {
+      complaintId: row.id,
+      status: row.status,
+      escalatedAt: row.escalated_at?.toISOString() ?? null,
+    };
+    if (idempotencyKey) {
+      await recordToolOutcome(db, {
+        idempotencyKey,
+        tool: "escalateComplaint",
+        customerId,
+        state: "confirmed",
+        data,
+      });
+    }
+    return { ok: true, data };
+  };
+
   return {
     getTransactions,
     getTransactionStatus,
@@ -381,5 +518,8 @@ export function createMockWorldHandlers(db: Queryable): Record<string, ToolHandl
     getRechargeDetails,
     getAccountSupportStatus,
     getComplaintStatus,
+    createComplaint,
+    addComplaintDetails,
+    escalateComplaint,
   };
 }

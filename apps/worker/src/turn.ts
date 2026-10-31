@@ -2,6 +2,7 @@ import {
   appendEventWithEpoch,
   listCaseEvents,
   releaseCase,
+  requestWriteApproval,
   type CaseRow,
   type Db,
 } from "@repo/core";
@@ -53,6 +54,47 @@ export async function processClaimedCase(
   }
 
   const response = await runSupervisor(built.request, dependencies);
+
+  const approvalTask = response.tasks.find(
+    (task) =>
+      task.status === "escalated" &&
+      task.errorCode === "APPROVAL_REQUIRED" &&
+      typeof task.data?.stepId === "string" &&
+      typeof task.data?.tool === "string",
+  );
+
+  if (approvalTask?.data) {
+    await appendEventWithEpoch(db, {
+      caseId: caseRow.id,
+      heldEpoch,
+      type: "worker_step",
+      audience: "internal",
+      payload: {
+        workerId,
+        status: response.status,
+        tasks: response.tasks,
+        requiresCustomerInput: response.requiresCustomerInput,
+      },
+      releaseLease: false,
+    });
+
+    await requestWriteApproval(db, {
+      caseId: caseRow.id,
+      stepId: String(approvalTask.data.stepId),
+      tool: String(approvalTask.data.tool),
+      intentId:
+        typeof approvalTask.data.intentId === "string"
+          ? approvalTask.data.intentId
+          : undefined,
+      message: response.message,
+    });
+
+    return {
+      caseId: caseRow.id,
+      status: "pending_approval",
+      message: response.message,
+    };
+  }
 
   await appendEventWithEpoch(db, {
     caseId: caseRow.id,

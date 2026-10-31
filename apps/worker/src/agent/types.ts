@@ -92,6 +92,7 @@ export type AgentTaskResult = {
   references?: string[];
   observations?: ToolObservation[];
   errorCode?: string;
+  data?: Record<string, unknown>;
 };
 
 export type ToolInvocationInput = {
@@ -100,12 +101,23 @@ export type ToolInvocationInput = {
   tool: string;
   args: Record<string, unknown>;
   customerId: string;
+  executeApproved?: boolean;
+  approvedBy?: string;
+  heldEpoch?: string;
+  workflowLevel?: 0 | 1 | 2;
 };
 
 export type ToolInvocationResult =
   | { state: "confirmed"; data: unknown }
   | { state: "failed"; errorCode: string; message: string }
-  | { state: "unknown"; reason: "timeout" | "transport"; errorCode?: string };
+  | { state: "unknown"; reason: "timeout" | "transport"; errorCode?: string }
+  | {
+      state: "pending_approval";
+      intentId: string;
+      stepId: string;
+      tool: string;
+      message: string;
+    };
 
 export type ToolInvoker = {
   invoke(input: ToolInvocationInput): Promise<ToolInvocationResult>;
@@ -141,6 +153,8 @@ export type SupervisorTaskSummary = {
   status: TaskStatus;
   summary: string;
   references?: string[];
+  errorCode?: string;
+  data?: Record<string, unknown>;
 };
 
 export type SupervisorResponse = {

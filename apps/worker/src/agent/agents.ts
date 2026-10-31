@@ -320,23 +320,44 @@ export function createAgentRunner(): AgentRunner {
         };
       }
 
-      if (policy.decision === "hold_for_approval") {
+      const stepId = `${task.taskId}:${index}:${step.tool}`;
+      const result = await context.tools.invoke({
+        caseId: context.caseId,
+        stepId,
+        tool: step.tool,
+        args: validated.data,
+        customerId: context.customerId,
+        workflowLevel: context.workflowLevel,
+      });
+
+      if (
+        policy.decision === "hold_for_approval" ||
+        result.state === "pending_approval"
+      ) {
         return {
           taskId: task.taskId,
           agent: task.agent,
           status: "escalated",
           response: "This action needs human approval before it can run.",
           errorCode: "APPROVAL_REQUIRED",
+          observations:
+            result.state === "pending_approval"
+              ? [
+                  {
+                    tool: step.tool,
+                    state: "failed" as const,
+                    errorCode: "APPROVAL_REQUIRED",
+                  },
+                ]
+              : undefined,
+          data: {
+            stepId,
+            tool: step.tool,
+            intentId:
+              result.state === "pending_approval" ? result.intentId : undefined,
+          },
         };
       }
-
-      const result = await context.tools.invoke({
-        caseId: context.caseId,
-        stepId: `${task.taskId}:${index}:${step.tool}`,
-        tool: step.tool,
-        args: validated.data,
-        customerId: context.customerId,
-      });
 
       if (result.state === "confirmed") {
         observations.push({ tool: step.tool, state: "confirmed", data: result.data });

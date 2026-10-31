@@ -3,27 +3,48 @@ import { cors } from "hono/cors";
 import { z } from "zod";
 import {
   CoreError,
+  advanceVirtualClock,
+  applyDeskCommand,
   checkDb,
   createCase,
   createCaseAndAppendMessage,
   getCaseForCustomer,
+  getVirtualNow,
   listCaseEvents,
+  setVirtualClock,
   type Db,
 } from "@repo/core";
-import { requireCustomer, type AppVariables } from "./auth.js";
+import { createInvokeTool } from "@repo/gateway";
+import { requireCustomer, requireDesk, type AppVariables } from "./auth.js";
 
 const createCaseBody = z.object({
   priority: z.number().int().min(0).max(100).optional(),
-  customerId: z.string().optional(), // ignored; session wins
+  customerId: z.string().optional(),
 });
 
 const messageBody = z.object({
   message: z.string().min(1),
   caseId: z.string().uuid().optional(),
   commandId: z.string().min(1).max(128).optional(),
-  customerId: z.string().optional(), // ignored; session wins
+  customerId: z.string().optional(),
   priority: z.number().int().min(0).max(100).optional(),
 });
+
+const deskCommandBody = z.object({
+  type: z.enum(["approve", "reject", "takeover", "hand_back"]),
+  commandId: z.string().min(1).max(128),
+  stepId: z.string().min(1).max(256).optional(),
+  note: z.string().max(500).optional(),
+});
+
+const clockBody = z
+  .object({
+    advanceByMs: z.number().int().nonnegative().optional(),
+    setTo: z.string().datetime().optional(),
+  })
+  .refine((value) => value.advanceByMs !== undefined || value.setTo !== undefined, {
+    message: "advanceByMs or setTo required",
+  });
 
 function mapCoreError(error: unknown): {
   status: 400 | 403 | 404 | 409;
@@ -43,6 +64,7 @@ function mapCoreError(error: unknown): {
 
 export function createApp(db: Db) {
   const app = new Hono<{ Variables: AppVariables }>();
+  const tools = createInvokeTool({ db, timeoutMs: 8_000 });
 
   app.use(
     "*",
@@ -53,7 +75,12 @@ export function createApp(db: Db) {
         "http://localhost:3000",
         "http://127.0.0.1:3000",
       ],
-      allowHeaders: ["Content-Type", "X-Customer-Id"],
+      allowHeaders: [
+        "Content-Type",
+        "X-Customer-Id",
+        "X-Desk-Role",
+        "X-Desk-Actor",
+      ],
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   );
@@ -110,7 +137,7 @@ export function createApp(db: Db) {
         caseId,
         customerId: customer.id,
       });
-      const events = await listCaseEvents(db, { caseId, limit: 50 });
+      const events = await listCaseEvents(db, { caseId, limit: 100 });
       return c.json({
         conversationId: caseRow.id,
         status: caseRow.status,
@@ -187,6 +214,81 @@ export function createApp(db: Db) {
         },
         result.created ? 201 : 200,
       );
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.post("/v1/desk/cases/:caseId/commands", requireDesk, async (c) => {
+    const desk = c.get("desk")!;
+    const caseId = c.req.param("caseId");
+    const parsed = deskCommandBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+
+    try {
+      const result = await applyDeskCommand(db, {
+        caseId,
+        commandId: parsed.data.commandId,
+        type: parsed.data.type,
+        stepId: parsed.data.stepId,
+        note: parsed.data.note,
+        actor: desk,
+        executeWrite: async (write) => {
+          const outcome = await tools.invoke({
+            caseId: write.caseId,
+            stepId: write.stepId,
+            tool: write.tool,
+            args: write.args,
+            customerId: write.customerId,
+            executeApproved: true,
+            approvedBy: write.approvedBy,
+          });
+          return outcome;
+        },
+      });
+
+      return c.json(
+        {
+          conversationId: result.case.id,
+          ownership: result.case.ownership,
+          runnable: result.case.runnable,
+          status: result.created ? "accepted" : "duplicate",
+          seq: Number(result.event.seq),
+          execution: result.execution ?? null,
+        },
+        result.created ? 201 : 200,
+      );
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.get("/v1/demo/clock", requireDesk, async (c) => {
+    const now = await getVirtualNow(db);
+    return c.json({ nowAt: now.toISOString() });
+  });
+
+  app.post("/v1/demo/clock", requireDesk, async (c) => {
+    const desk = c.get("desk")!;
+    if (desk.role !== "approver" && desk.role !== "admin") {
+      return c.json({ error: "Approver role required", code: "FORBIDDEN" }, 403);
+    }
+    const parsed = clockBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+    try {
+      const nowAt =
+        parsed.data.setTo !== undefined
+          ? await setVirtualClock(db, new Date(parsed.data.setTo))
+          : await advanceVirtualClock(db, parsed.data.advanceByMs!);
+      return c.json({ nowAt: nowAt.toISOString() });
     } catch (error) {
       const mapped = mapCoreError(error);
       if (mapped) return c.json(mapped.body, mapped.status);

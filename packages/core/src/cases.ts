@@ -1,5 +1,6 @@
 import type { Db, DbClient } from "./db.js";
 import { withTransaction } from "./db.js";
+import { notifyCaseEvent } from "./notify.js";
 import {
   CoreError,
   type Audience,
@@ -217,6 +218,7 @@ export async function appendCustomerMessage(
       throw new CoreError("Failed to update case", "CONFLICT");
     }
 
+    await notifyCaseEvent(client, { caseId: input.caseId, seq: nextSeq });
     return {
       case: mapCase(updatedCase),
       event: mapEvent(eventRow),
