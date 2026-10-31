@@ -16,10 +16,16 @@ export type AuthenticatedContext = {
   roles: string[];
 };
 
+export type SupervisorContext = {
+  facts?: Record<string, unknown>;
+  recentEvents?: string[];
+};
+
 export type SupervisorRequest = {
   conversationId: string;
   message: string;
   authenticatedContext: AuthenticatedContext;
+  context?: SupervisorContext;
 };
 
 export type RawClassificationIntent = {

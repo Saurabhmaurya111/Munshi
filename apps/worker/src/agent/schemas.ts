@@ -55,6 +55,12 @@ export const supervisorRequestSchema = z.object({
     customerId: z.string().min(1).max(128),
     roles: z.array(z.string().min(1).max(64)).max(20),
   }),
+  context: z
+    .object({
+      facts: z.record(z.string(), z.unknown()).optional(),
+      recentEvents: z.array(z.string().min(1).max(2000)).max(50).optional(),
+    })
+    .optional(),
 });
 
 export const toolObservationSchema = z.object({

@@ -9,4 +9,5 @@ export * from "./tool-client.js";
 export * from "./classifier.js";
 export * from "./agents.js";
 export * from "./aggregation.js";
+export * from "./case-context.js";
 export * from "./supervisor.js";
