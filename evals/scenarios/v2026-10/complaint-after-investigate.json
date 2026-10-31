@@ -46,7 +46,7 @@
     "toolsOrder": ["getTransactionStatus", "createComplaint"],
     "toolsMustNotRun": ["escalateComplaint"],
     "escalate": false,
-    "replyMustMatch": ["failed", "created"],
+    "replyMustMatch": ["failed", "complaint"],
     "wrongActionIf": ["escalateComplaint"]
   }
 }

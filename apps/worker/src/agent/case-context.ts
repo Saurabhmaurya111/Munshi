@@ -1,7 +1,8 @@
 import type { CaseEventRow } from "@repo/core";
 import type { SupervisorRequest } from "./types.js";
 
-export type CaseContextEvent = Pick<CaseEventRow, "type" | "audience" | "payload">;
+export type CaseContextEvent = Pick<CaseEventRow, "type" | "audience" | "payload"> &
+  Partial<Pick<CaseEventRow, "seq">>;
 
 export type CaseContextInput = {
   caseId: string;
@@ -9,6 +10,7 @@ export type CaseContextInput = {
   events: CaseContextEvent[];
   facts?: Record<string, unknown>;
   roles?: string[];
+  correlationId?: string;
 };
 
 export type CaseContextResult =
@@ -33,6 +35,35 @@ function recentEventText(event: CaseContextEvent): string | null {
   }
 
   return `[${event.type}] ${JSON.stringify(event.payload)}`;
+}
+
+/** Intents the previous turn left waiting on the customer, read from its worker_step event. */
+function pendingIntentsBefore(events: CaseContextEvent[], latest: CaseContextEvent): string[] {
+  const end = events.indexOf(latest);
+
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const event = events[index];
+
+    if (event?.type === "customer_message") {
+      return [];
+    }
+
+    if (event?.type !== "worker_step") {
+      continue;
+    }
+
+    const trace = event.payload.trace;
+    const pending =
+      typeof trace === "object" && trace !== null
+        ? (trace as { pendingIntents?: unknown }).pendingIntents
+        : undefined;
+
+    return Array.isArray(pending)
+      ? pending.filter((intent): intent is string => typeof intent === "string").slice(0, 5)
+      : [];
+  }
+
+  return [];
 }
 
 export function buildSupervisorRequest(input: CaseContextInput): CaseContextResult {
@@ -73,6 +104,8 @@ export function buildSupervisorRequest(input: CaseContextInput): CaseContextResu
       return text ? [text] : [];
     });
 
+  const pendingIntents = pendingIntentsBefore(input.events, latest);
+
   return {
     ok: true,
     request: {
@@ -85,7 +118,10 @@ export function buildSupervisorRequest(input: CaseContextInput): CaseContextResu
       context: {
         facts: input.facts ?? {},
         recentEvents,
+        ...(pendingIntents.length > 0 ? { pendingIntents } : {}),
       },
+      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+      ...(latest.seq ? { turnId: `m${latest.seq}` } : {}),
     },
   };
 }

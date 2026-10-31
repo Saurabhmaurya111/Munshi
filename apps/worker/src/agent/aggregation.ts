@@ -1,4 +1,5 @@
 import type {
+  AgentName,
   AgentTaskResult,
   RunStatus,
   SupervisorTaskSummary,
@@ -10,11 +11,50 @@ export type AggregatedResult = {
   requiresCustomerInput: boolean;
 };
 
-export function aggregateResults(results: AgentTaskResult[]): AggregatedResult {
+export type AggregateOptions = {
+  /** Safety notes shown before the task answers. */
+  notes?: string[];
+};
+
+const AGENT_LABELS: Record<AgentName, string> = {
+  upi_agent: "UPI payment",
+  refund_agent: "Refund",
+  recharge_agent: "Recharge",
+  account_agent: "Account",
+  complaint_agent: "Complaint",
+};
+
+function composeMessage(results: AgentTaskResult[], notes: string[]): string {
+  const seen = new Set<string>();
+  const answers = results.flatMap((result) => {
+    const response = result.response.trim();
+
+    if (response.length === 0 || seen.has(response)) {
+      return [];
+    }
+
+    seen.add(response);
+    return [{ agent: result.agent, response }];
+  });
+
+  const body =
+    answers.length > 1
+      ? answers.map((answer) => `${AGENT_LABELS[answer.agent]}: ${answer.response}`).join("\n\n")
+      : (answers[0]?.response ?? "");
+
+  return [...notes, body].filter((part) => part.length > 0).join("\n\n");
+}
+
+export function aggregateResults(
+  results: AgentTaskResult[],
+  options: AggregateOptions = {},
+): AggregatedResult {
+  const notes = options.notes ?? [];
+
   if (results.length === 0) {
     return {
       status: "failed",
-      message: "No supported task could be processed.",
+      message: [...notes, "No supported task could be processed."].join("\n\n"),
       requiresCustomerInput: false,
     };
   }
@@ -37,9 +77,7 @@ export function aggregateResults(results: AgentTaskResult[]): AggregatedResult {
     status = "failed";
   }
 
-  const message = [...new Set(results.map((result) => result.response.trim()))]
-    .filter((part) => part.length > 0)
-    .join(" ");
+  const message = composeMessage(results, notes);
 
   return {
     status,
@@ -56,6 +94,9 @@ export function toTaskSummaries(results: AgentTaskResult[]): SupervisorTaskSumma
     summary: result.response,
     ...(result.references && result.references.length > 0
       ? { references: result.references }
+      : {}),
+    ...(result.citations && result.citations.length > 0
+      ? { citations: result.citations }
       : {}),
     ...(result.errorCode ? { errorCode: result.errorCode } : {}),
   }));

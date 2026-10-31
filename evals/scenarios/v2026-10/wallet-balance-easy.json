@@ -38,7 +38,7 @@
     "toolsMustRun": ["getWalletBalance"],
     "toolsMustNotRun": ["getTransactions", "createComplaint"],
     "escalate": false,
-    "replyMustMatch": ["active"],
+    "replyMustMatch": ["wallet", "active"],
     "wrongActionIf": ["createComplaint"]
   }
 }
