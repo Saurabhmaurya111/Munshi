@@ -3,6 +3,10 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
+    "build:api": "turbo run build --filter=api...",
+    "build:worker": "turbo run build --filter=worker...",
+    "start:api": "npm run start --workspace=api",
+    "start:worker": "npm run start --workspace=worker",
     "dev": "turbo run dev --filter=api --filter=worker --filter=web",
     "dev:stack": "npm run dev",
     "dev:api": "turbo run dev --filter=api",
@@ -35,7 +39,7 @@
   "devEngines": {
     "packageManager": {
       "name": "npm",
-      "version": ">=11.19.0",
+      "version": "^11.19.0",
       "onFail": "warn"
     }
   },
