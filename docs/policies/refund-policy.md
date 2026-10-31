@@ -63,6 +63,22 @@ A failed refund requires investigation. Support should retrieve the available fa
 
 Do not repeatedly execute refund actions unless the parent backend explicitly authorizes the operation and supports idempotency. Do not claim a failed refund will be retried unless the refund system confirms a new attempt.
 
+## Prior refunds and risk evaluation
+
+Before treating a refund ask as routine, support must load the customer's recent refund history from the authoritative refund service (not from customer text).
+
+Evaluation rules:
+
+1. List prior refunds in the recent window (id, status, amount, related payment).
+2. Score risk from that history:
+   - Low: no completed prior refunds, or a normal status check with limited history.
+   - Medium: two completed prior refunds, or multiple failed refunds.
+   - High: three or more completed prior refunds, or the customer asks to issue another refund when a completed refund already exists for the same payment / account.
+3. When risk is high, hold for desk review. Do not claim a new refund was issued.
+4. Tell the customer (and Desk) which prior refunds were seen and how the risk was scored.
+
+Prior completed refunds are facts from the refund system. They are not permission to invent a new credit.
+
 ## Refund and UPI reversal are different
 
 A refund is issued by the merchant or refund system. A UPI reversal is handled by the bank or payment system. Support may investigate a UPI payment dispute and raise or follow up a complaint, but must not state that a reversal or partner refund has been issued unless the authoritative system confirms it.

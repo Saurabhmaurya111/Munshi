@@ -181,7 +181,7 @@ describe("runSupervisor", () => {
     ]);
   });
 
-  it("holds a write at workflow level 0", async () => {
+  it("holds a write at workflow level 0 without invoking the tool", async () => {
     const deps = dependencies(
       { intents: [{ intent: "COMPLAINT_CREATE", entities: {} }] },
       {
@@ -199,11 +199,11 @@ describe("runSupervisor", () => {
     const response = await runSupervisor(request, deps);
 
     expect(response.status).toBe("escalated");
-    expect(deps.calls).toHaveLength(1);
-    expect(deps.calls[0]?.tool).toBe("createComplaint");
+    expect(response.message).toMatch(/approval/i);
+    expect(deps.calls).toHaveLength(0);
   });
 
-  it("holds the customer reply at workflow level 0 even when reads succeed", async () => {
+  it("sends the customer reply at workflow level 0 when reads succeed", async () => {
     const deps = dependencies(
       {
         intents: [
@@ -222,8 +222,9 @@ describe("runSupervisor", () => {
 
     const response = await runSupervisor(request, deps);
 
-    expect(response.status).toBe("escalated");
-    expect(response.message).toMatch(/human approval/i);
+    expect(response.status).toBe("completed");
+    expect(response.pendingReplyApproval).toBeFalsy();
+    expect(response.message).toMatch(/TXN12345|successful|success/i);
     expect(response.tasks).toHaveLength(1);
     expect(response.tasks[0]?.status).toBe("completed");
     expect(deps.calls).toHaveLength(1);

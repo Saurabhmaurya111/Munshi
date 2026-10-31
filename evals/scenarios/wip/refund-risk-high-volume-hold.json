@@ -1,0 +1,64 @@
+{
+  "id": "refund-risk-high-volume-hold",
+  "version": "2026-10",
+  "tags": ["fraud"],
+  "input": {
+    "message": "Check status of refund_new_4",
+    "authenticatedContext": {
+      "customerId": "customer-eval-refund-03",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "REFUND_STATUS",
+        "entities": { "refundId": "refund_new_4" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getRefundStatus": {
+      "state": "confirmed",
+      "data": {
+        "refunds": [
+          {
+            "refundId": "refund_r1",
+            "transactionId": "txn_a",
+            "amountPaise": 10000,
+            "status": "completed"
+          },
+          {
+            "refundId": "refund_r2",
+            "transactionId": "txn_b",
+            "amountPaise": 25000,
+            "status": "completed"
+          },
+          {
+            "refundId": "refund_r3",
+            "transactionId": "txn_c",
+            "amountPaise": 40000,
+            "status": "completed"
+          },
+          {
+            "refundId": "refund_new_4",
+            "transactionId": "txn_d",
+            "amountPaise": 50000,
+            "status": "processing"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": "escalated",
+    "agents": ["refund_agent"],
+    "toolsMustRun": ["getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": true,
+    "replyMustMatch": ["HIGH", "completed", "desk"],
+    "replyMustNotMatch": ["I processed a new refund"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

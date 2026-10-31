@@ -1,0 +1,48 @@
+{
+  "id": "refund-risk-clean-first-refund",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "My IRCTC refund refund_5001 is still pending.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-refund-04",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "REFUND_STATUS",
+        "entities": { "refundId": "refund_5001" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getRefundStatus": {
+      "state": "confirmed",
+      "data": {
+        "refunds": [
+          {
+            "refundId": "refund_5001",
+            "transactionId": "txn_upi_1001",
+            "amountPaise": 200000,
+            "status": "delayed",
+            "reason": "Beneficiary bank reversal not confirmed",
+            "expectedBy": "2026-11-03"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "agents": ["refund_agent"],
+    "toolsMustRun": ["getRefundStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["delayed", "LOW"],
+    "replyMustNotMatch": ["HIGH", "I have refunded"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

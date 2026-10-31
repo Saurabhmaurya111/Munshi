@@ -47,13 +47,12 @@ export function evaluateToolPolicy(
   return { decision: "allow", reason: "low-risk write at workflow level 2" };
 }
 
-export function evaluateReplyPolicy(workflowLevel: WorkflowLevel): PolicyDecision {
-  if (workflowLevel < 1) {
-    return {
-      decision: "hold_for_approval",
-      reason: "customer replies need workflow level 1",
-    };
-  }
-
+/**
+ * Customer replies are allowed at every workflow level.
+ * L0 still gates *writes* via evaluateToolPolicy — not the read-path answer.
+ */
+export function evaluateReplyPolicy(
+  _workflowLevel: WorkflowLevel,
+): PolicyDecision {
   return { decision: "allow", reason: "customer reply allowed" };
 }
