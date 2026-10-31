@@ -1,83 +1,67 @@
 # Support FAQ
 
-## Payment Support
+This document gives short answers to common customer questions about payments, refunds, complaints, UPI reversals, recharge issues, and account security. Authoritative status, amounts, references, and action outcomes must come from backend tools. The FAQ explains policy and must not be treated as proof that a payment, refund, recharge, or account action succeeded.
 
-### What should I do if my payment fails?
+## My payment failed. What should I do?
 
-If a payment fails, the system should verify the transaction status before suggesting any action. A failed transaction may result from network issues, bank-side errors, insufficient balance, temporary service disruption, or authorization problems.
+Customers may ask "my payment failed, what now", "why did my payment fail", or "should I try again".
 
-If the transaction status is confirmed as failed, the customer should be informed of the failure reason when available.
+A failed payment may be caused by network problems, bank-side errors, insufficient balance, temporary service disruption, or authorization problems. Verify the transaction status before suggesting any action.
 
-Do not assume that money has been refunded unless the authoritative transaction or refund system confirms it.
+If the authoritative transaction status is failed, explain the available failure reason. Do not assume that money has been refunded unless the transaction or refund system confirms it. Recommend a retry only when the verified status makes a retry appropriate.
 
----
+## What does a pending payment mean?
 
-### What does a pending payment mean?
+Customers may ask "what does pending mean", "why is my payment still processing", or "is my payment stuck".
 
-A pending payment means that the transaction has not reached a final status.
+A pending payment has not reached a final status. Check the latest transaction status using the authoritative transaction service, and tell the customer that the payment is still processing when that state is confirmed.
 
-The customer should be informed that the transaction is still being processed. The system should check the latest transaction status using the authoritative transaction service.
+Do not declare a pending transaction successful or failed until a final status is available.
 
-The AI assistant must not declare a pending transaction successful or failed until a final status is available.
+## Money was deducted but the receiver did not receive it
 
----
+Customers may say "money was deducted but not received", "the receiver did not get the payment", or "my transfer is stuck".
 
-### Money was deducted but the receiver did not receive it
+Verify that the transaction belongs to the authenticated customer, retrieve the latest transaction status, and check any available transaction or bank reference. Determine whether the transaction is successful, failed, pending, or reversed, and explain the verified result.
 
-The system should:
+Create or escalate a complaint when the configured support policy requires it. Never invent a reversal or refund status.
 
-1. Verify that the transaction belongs to the authenticated customer.
-2. Retrieve the latest transaction status.
-3. Check any available transaction or bank reference.
-4. Determine whether the transaction is successful, failed, pending, or reversed.
-5. Provide the customer with the verified result.
-6. Create or escalate a complaint when the configured support policy requires it.
+## How can I check my refund?
 
-The AI assistant must never invent a reversal or refund status.
+Customers may ask "how do I check my refund", "where is my refund", or "what is my refund status".
 
----
+Retrieve the refund using an authoritative refund reference or a transaction associated with the authenticated customer. Possible refund states include initiated, processing, completed, failed, and not found.
 
-## Refund Support
+The exact status returned by the refund service is the source of truth. Do not infer a refund status from a payment status or complaint status.
 
-### How can I check my refund?
+## My refund has not arrived
 
-The system should retrieve the refund using an authoritative refund reference or a transaction associated with the authenticated customer.
+Customers may say "my refund has not arrived", "the refund is late", or "I still have not received my money".
 
-Possible refund states include:
+First verify whether a refund exists and retrieve its latest status. If the refund is still processing, provide the available status information. If the refund has failed or remains unresolved according to the applicable workflow, create or escalate a complaint.
 
-- Initiated
-- Processing
-- Completed
-- Failed
-- Not found
+Do not claim that a new refund has been issued unless the authoritative system confirms it.
 
-The exact status returned by the refund service is the source of truth.
+## When should a complaint be created?
 
----
+Customers may ask "can I file a complaint", "please create a ticket", or "I want to escalate this".
 
-### My refund has not arrived
+A complaint may be created when an investigation cannot resolve the issue automatically, a transaction remains unresolved, a refund has failed or requires manual investigation, a recharge issue needs support intervention, the customer reports suspicious activity, or the support workflow explicitly requires escalation.
 
-The system should first verify whether a refund exists and retrieve its latest status.
+A complaint must be created through an approved backend tool. Return only the ticket reference generated by the authoritative complaint system.
 
-If the refund is still processing, provide the available status information.
+## Can support reverse a UPI payment?
 
-If the refund has failed or exceeded the configured support timeframe, create or escalate a complaint according to the applicable workflow.
+Customers may ask "can you reverse my UPI payment", "please refund my UPI transfer", or "cancel the payment".
 
----
+Support can investigate the payment and raise or follow up a complaint or dispute, but support cannot issue a UPI reversal or a partner refund. A UPI reversal is handled by the bank or payment system.
 
-## Complaint Support
+Do not promise a reversal. Report only the outcome confirmed by the authoritative transaction or refund system.
 
-### When should a complaint be created?
+## Can support approve KYC or remove an account block?
 
-A complaint may be created when:
+Customers may ask "please approve my KYC", "unblock my account", or "remove the restriction".
 
-- An investigation cannot resolve the customer's issue automatically.
-- A transaction remains unresolved.
-- A refund has failed or requires manual investigation.
-- A recharge issue requires support intervention.
-- The customer reports suspicious activity.
-- The support workflow explicitly requires escalation.
+Support may retrieve the authorized KYC or account-support status and explain the next step. Support must not approve, bypass, or reverse KYC verification, and must not remove a security restriction unless an authorized backend workflow explicitly permits it.
 
-A complaint must be created through an approved backend tool.
-
-The AI assistant must return the ticket reference generated by the authoritative complaint system.
+Escalate cases that require manual identity or security review.
