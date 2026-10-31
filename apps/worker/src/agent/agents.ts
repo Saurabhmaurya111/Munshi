@@ -1,9 +1,15 @@
+import { interpretObservation, type Interpretation } from "./explain.js";
 import { getIntentDefinition } from "./intents.js";
 import { evaluateToolPolicy } from "./policy.js";
+import { redactSecrets } from "./risk.js";
 import { getTool, isToolAllowedForAgent, validateToolArgs } from "./tools.js";
 import type {
+  AgentName,
   AgentTask,
   AgentTaskResult,
+  Domain,
+  KnowledgeLookup,
+  RiskSignals,
   ToolInvoker,
   ToolObservation,
   WorkflowLevel,
@@ -18,6 +24,9 @@ export type AgentRunContext = {
   tools: ToolInvoker;
   results: Map<string, AgentTaskResult>;
   amountApprovalThreshold?: number;
+  risk?: RiskSignals;
+  knowledge?: KnowledgeLookup;
+  turnId?: string;
 };
 
 export type AgentRunner = (
@@ -30,9 +39,22 @@ type ToolPlanStep = {
   args: Record<string, unknown>;
 };
 
+/** Attempts run in order until one returns a non-empty answer. */
 type ToolPlan =
-  | { ok: true; steps: ToolPlanStep[] }
+  | { ok: true; attempts: ToolPlanStep[] }
   | { ok: false; missing: string[] };
+
+const AGENT_DOMAINS: Record<AgentName, Domain> = {
+  upi_agent: "upi",
+  refund_agent: "refund",
+  recharge_agent: "recharge",
+  account_agent: "account",
+  complaint_agent: "complaint",
+};
+
+const FRAUD_SENSITIVE_DOMAINS: Domain[] = ["upi", "account"];
+
+const MAX_CITATIONS = 2;
 
 function stringEntity(entities: Record<string, unknown>, name: string): string | undefined {
   const value = entities[name];
@@ -41,107 +63,135 @@ function stringEntity(entities: Record<string, unknown>, name: string): string |
 
 function lookupFilters(entities: Record<string, unknown>): Record<string, unknown> {
   const filters: Record<string, unknown> = {};
-  const amount = entities.amount;
 
-  if (typeof amount === "number") {
-    filters.amount = amount;
+  if (typeof entities.amount === "number") {
+    filters.amount = entities.amount;
   }
 
-  const relativeDate = entities.relativeDate;
-
-  if (typeof relativeDate === "string") {
-    filters.relativeDate = relativeDate;
+  if (typeof entities.relativeDate === "string") {
+    filters.relativeDate = entities.relativeDate;
   }
 
   return filters;
 }
 
-function compileToolPlan(task: AgentTask, message: string): ToolPlan {
+/** Strict filter first; customers often misremember the day, so retry on amount alone. */
+function filterAttempts(tool: string, entities: Record<string, unknown>): ToolPlanStep[] {
+  const filters = lookupFilters(entities);
+
+  if (Object.keys(filters).length === 0) {
+    return [];
+  }
+
+  const attempts: ToolPlanStep[] = [{ tool, args: filters }];
+
+  if (filters.amount !== undefined && filters.relativeDate !== undefined) {
+    attempts.push({ tool, args: { amount: filters.amount } });
+  }
+
+  return attempts;
+}
+
+function complaintCategory(task: AgentTask, context: AgentRunContext): string {
+  for (const dependency of task.dependsOn) {
+    const result = context.results.get(dependency);
+
+    if (result && result.agent !== "complaint_agent") {
+      return AGENT_DOMAINS[result.agent];
+    }
+  }
+
+  return "complaint";
+}
+
+function complaintSummary(task: AgentTask, context: AgentRunContext): string {
+  const related = task.dependsOn.flatMap(
+    (dependency) => context.results.get(dependency)?.references ?? [],
+  );
+  const base = redactSecrets(context.message).trim();
+  const suffix = related.length > 0 ? ` [related: ${[...new Set(related)].join(", ")}]` : "";
+
+  return `${base.slice(0, 500 - suffix.length)}${suffix}`;
+}
+
+function compileToolPlan(task: AgentTask, context: AgentRunContext): ToolPlan {
+  const { entities } = task;
+
   switch (task.intent) {
     case "UPI_PAYMENT_ISSUE": {
-      const transactionId = stringEntity(task.entities, "transactionId");
+      const transactionId = stringEntity(entities, "transactionId");
 
       if (transactionId) {
-        return { ok: true, steps: [{ tool: "getTransactionStatus", args: { transactionId } }] };
+        return { ok: true, attempts: [{ tool: "getTransactionStatus", args: { transactionId } }] };
       }
 
-      const filters = lookupFilters(task.entities);
-
-      if (Object.keys(filters).length > 0) {
-        return { ok: true, steps: [{ tool: "getTransactions", args: filters }] };
-      }
-
-      return { ok: false, missing: ["transactionId", "amount", "relativeDate"] };
+      const attempts = filterAttempts("getTransactions", entities);
+      return attempts.length > 0
+        ? { ok: true, attempts }
+        : { ok: false, missing: ["transactionId", "amount", "relativeDate"] };
     }
 
     case "REFUND_STATUS": {
-      const refundId = stringEntity(task.entities, "refundId");
-      const transactionId = stringEntity(task.entities, "transactionId");
+      const refundId = stringEntity(entities, "refundId");
+      const transactionId = stringEntity(entities, "transactionId");
 
       if (refundId) {
-        return { ok: true, steps: [{ tool: "getRefundStatus", args: { refundId } }] };
+        return { ok: true, attempts: [{ tool: "getRefundStatus", args: { refundId } }] };
       }
 
       if (transactionId) {
-        return { ok: true, steps: [{ tool: "getRefundStatus", args: { transactionId } }] };
+        return { ok: true, attempts: [{ tool: "getRefundStatus", args: { transactionId } }] };
       }
 
-      const filters = lookupFilters(task.entities);
-
-      if (Object.keys(filters).length > 0) {
-        return { ok: true, steps: [{ tool: "getRefundStatus", args: filters }] };
-      }
-
-      return { ok: false, missing: ["refundId", "transactionId", "amount", "relativeDate"] };
+      const attempts = filterAttempts("getRefundStatus", entities);
+      return attempts.length > 0
+        ? { ok: true, attempts }
+        : { ok: false, missing: ["refundId", "transactionId", "amount", "relativeDate"] };
     }
 
     case "RECHARGE_ISSUE": {
-      const rechargeNumber = stringEntity(task.entities, "rechargeNumber");
-      const transactionId = stringEntity(task.entities, "transactionId");
-
-      if (rechargeNumber) {
-        return { ok: true, steps: [{ tool: "getRechargeStatus", args: { rechargeNumber } }] };
-      }
+      const rechargeNumber = stringEntity(entities, "rechargeNumber");
+      const transactionId = stringEntity(entities, "transactionId");
 
       if (transactionId) {
-        return { ok: true, steps: [{ tool: "getRechargeStatus", args: { transactionId } }] };
+        return { ok: true, attempts: [{ tool: "getRechargeStatus", args: { transactionId } }] };
       }
 
-      const filters = lookupFilters(task.entities);
-
-      if (Object.keys(filters).length > 0) {
-        return { ok: true, steps: [{ tool: "getRechargeStatus", args: filters }] };
+      if (rechargeNumber) {
+        return { ok: true, attempts: [{ tool: "getRechargeStatus", args: { rechargeNumber } }] };
       }
 
-      return { ok: false, missing: ["rechargeNumber", "transactionId", "amount", "relativeDate"] };
+      const attempts = filterAttempts("getRechargeStatus", entities);
+      return attempts.length > 0
+        ? { ok: true, attempts }
+        : { ok: false, missing: ["rechargeNumber", "transactionId", "amount", "relativeDate"] };
     }
 
     case "ACCOUNT_ISSUE":
-      return { ok: true, steps: [{ tool: "getAccountSupportStatus", args: {} }] };
+      return { ok: true, attempts: [{ tool: "getAccountSupportStatus", args: {} }] };
 
     case "COMPLAINT_STATUS": {
-      const complaintId = stringEntity(task.entities, "complaintId");
+      const complaintId = stringEntity(entities, "complaintId");
 
-      if (!complaintId) {
-        return { ok: false, missing: ["complaintId"] };
-      }
-
-      return { ok: true, steps: [{ tool: "getComplaintStatus", args: { complaintId } }] };
+      return complaintId
+        ? { ok: true, attempts: [{ tool: "getComplaintStatus", args: { complaintId } }] }
+        : { ok: false, missing: ["complaintId"] };
     }
 
     case "COMPLAINT_CREATE": {
-      const summary = message.trim().slice(0, 500);
-
-      if (summary.length === 0) {
+      if (context.message.trim().length === 0) {
         return { ok: false, missing: ["summary"] };
       }
 
       return {
         ok: true,
-        steps: [
+        attempts: [
           {
             tool: "createComplaint",
-            args: { category: "complaint", summary },
+            args: {
+              category: complaintCategory(task, context),
+              summary: complaintSummary(task, context),
+            },
           },
         ],
       };
@@ -152,63 +202,277 @@ function compileToolPlan(task: AgentTask, message: string): ToolPlan {
   }
 }
 
-function extractStatus(data: unknown): string | undefined {
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    return undefined;
-  }
-
-  const status = (data as Record<string, unknown>).status;
-  return typeof status === "string" ? status : undefined;
-}
-
-function extractReferences(data: unknown): string[] {
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    return [];
-  }
-
-  const record = data as Record<string, unknown>;
-  const keys = ["reference", "transactionId", "refundId", "complaintId", "rechargeNumber"];
-
-  return keys.flatMap((key) => {
-    const value = record[key];
-    return typeof value === "string" ? [value] : [];
-  });
-}
-
 function labelFor(task: AgentTask): string {
   switch (task.domain) {
     case "upi":
       return "UPI payment";
     case "refund":
-      return "Refund";
+      return "refund";
     case "recharge":
-      return "Recharge";
+      return "recharge";
     case "account":
-      return "Account";
+      return "account";
     case "complaint":
-      return "Complaint";
+      return "complaint";
   }
 }
 
 function clarificationFor(task: AgentTask, missing: string[]): string {
   if (missing.includes("complaintId")) {
-    return "Please share the complaint reference number.";
+    return "Please share the complaint reference number so I can check it.";
   }
 
   if (missing.includes("summary")) {
     return "Please describe the issue you want a complaint raised for.";
   }
 
-  return `Please share the transaction reference, amount, or date so I can find the right ${labelFor(task).toLowerCase()}.`;
+  switch (task.domain) {
+    case "upi":
+      return "Please share the transaction reference from your payment history, or the amount and the day you paid, so I can find the right payment.";
+    case "refund":
+      return "Please share the refund reference, or the payment and amount it's for, so I can find the right refund.";
+    case "recharge":
+      return "Please share the recharge reference, or the mobile number and amount, so I can find the right recharge.";
+    default:
+      return `Please share a little more detail so I can find the right ${labelFor(task)}.`;
+  }
 }
 
-function observationSummary(observations: ToolObservation[]): string {
-  const parts = observations.map((observation) => {
-    const status = extractStatus(observation.data);
-    return status ? `${observation.tool} returned status "${status}"` : `${observation.tool} confirmed`;
-  });
+function notFoundFor(task: AgentTask): string {
+  return `I couldn't find a matching ${labelFor(task)} on your account. ${clarificationFor(task, [])}`;
+}
 
-  return `Verified: ${parts.join("; ")}.`;
+function citationId(passage: { documentId: string; documentVersion: string; chunkIndex: number }) {
+  return `${passage.documentId}@${passage.documentVersion}#${passage.chunkIndex}`;
+}
+
+async function lookupCitations(task: AgentTask, context: AgentRunContext): Promise<string[]> {
+  if (!context.knowledge) {
+    return [];
+  }
+
+  try {
+    const passages = await context.knowledge({
+      query: redactSecrets(context.message),
+      category: task.domain,
+    });
+    return passages.slice(0, MAX_CITATIONS).map(citationId);
+  } catch {
+    return [];
+  }
+}
+
+type Draft = Omit<AgentTaskResult, "taskId" | "agent" | "intent" | "citations">;
+
+function finish(
+  task: AgentTask,
+  draft: Draft,
+  citations: string[],
+): AgentTaskResult {
+  return {
+    taskId: task.taskId,
+    agent: task.agent,
+    intent: task.intent,
+    ...draft,
+    ...(citations.length > 0 ? { citations } : {}),
+  };
+}
+
+function applyRisk(task: AgentTask, context: AgentRunContext, draft: Draft): Draft {
+  if (!context.risk?.fraudSuspected || !FRAUD_SENSITIVE_DOMAINS.includes(task.domain)) {
+    return draft;
+  }
+
+  if (draft.status === "failed") {
+    return draft;
+  }
+
+  return { ...draft, status: "escalated", errorCode: "FRAUD_SUSPECTED" };
+}
+
+async function execute(task: AgentTask, context: AgentRunContext): Promise<Draft> {
+  for (const dependency of task.dependsOn) {
+    const dependencyResult = context.results.get(dependency);
+
+    if (dependencyResult?.status === "completed") {
+      continue;
+    }
+
+    if (dependencyResult?.status === "needs_clarification") {
+      return {
+        status: "needs_clarification",
+        response: "I'll raise the complaint once we've identified the right record.",
+        errorCode: "DEPENDENCY_NEEDS_INPUT",
+      };
+    }
+
+    return {
+      status: "escalated",
+      response: "This action needs the related investigation to finish first.",
+      errorCode: "DEPENDENCY_NOT_SATISFIED",
+    };
+  }
+
+  if (task.missingEntities.length > 0) {
+    return {
+      status: "needs_clarification",
+      response: clarificationFor(task, task.missingEntities),
+      errorCode: "MISSING_INFORMATION",
+    };
+  }
+
+  if (!getIntentDefinition(task.intent)) {
+    return {
+      status: "failed",
+      response: "The request could not be matched to a supported workflow.",
+      errorCode: "UNKNOWN_INTENT",
+    };
+  }
+
+  const plan = compileToolPlan(task, context);
+
+  if (!plan.ok) {
+    return {
+      status: "needs_clarification",
+      response: clarificationFor(task, plan.missing),
+      errorCode: "MISSING_INFORMATION",
+    };
+  }
+
+  const observations: ToolObservation[] = [];
+  let interpretation: Interpretation = { kind: "empty" };
+
+  for (const [index, step] of plan.attempts.entries()) {
+    const tool = getTool(step.tool);
+
+    if (!tool) {
+      return {
+        status: "failed",
+        response: "The requested action is not available.",
+        errorCode: "UNKNOWN_TOOL",
+      };
+    }
+
+    if (!isToolAllowedForAgent(step.tool, task.agent)) {
+      return {
+        status: "failed",
+        response: "The requested action is not permitted for this workflow.",
+        errorCode: "TOOL_NOT_ALLOWED",
+      };
+    }
+
+    const validated = validateToolArgs(step.tool, step.args);
+
+    if (!validated.ok) {
+      return {
+        status: "failed",
+        response: "The request could not be validated safely.",
+        errorCode: "INVALID_ARGS",
+      };
+    }
+
+    const amount = task.entities.amount;
+    const policy = evaluateToolPolicy(tool.risk, {
+      workflowLevel: context.workflowLevel,
+      amount: typeof amount === "number" ? amount : undefined,
+      amountApprovalThreshold: context.amountApprovalThreshold,
+    });
+
+    if (policy.decision === "block") {
+      return {
+        status: "escalated",
+        response: "This action is blocked by policy, so I've passed it to the support team.",
+        errorCode: "POLICY_BLOCKED",
+      };
+    }
+
+    if (policy.decision === "hold_for_approval") {
+      return {
+        status: "escalated",
+        response: `To ${task.intent === "COMPLAINT_CREATE" ? "raise a complaint" : "do this"}, I need approval from our support team first. Your request is recorded on this case, and you'll get the reference once it's done.`,
+        errorCode: "APPROVAL_REQUIRED",
+      };
+    }
+
+    const result = await context.tools.invoke({
+      caseId: context.caseId,
+      stepId: `${context.turnId ? `${context.turnId}:` : ""}${task.taskId}:${index}:${step.tool}`,
+      tool: step.tool,
+      args: validated.data,
+      customerId: context.customerId,
+    });
+
+    if (result.state === "unknown") {
+      observations.push({ tool: step.tool, state: "unknown", errorCode: result.errorCode });
+      return {
+        status: "escalated",
+        response: `I couldn't get a confirmed answer about your ${labelFor(task)} because the system didn't respond in time. I won't guess, so I've flagged it for a check.`,
+        observations,
+        errorCode: "UNKNOWN_OUTCOME",
+      };
+    }
+
+    if (result.state === "failed") {
+      observations.push({ tool: step.tool, state: "failed", errorCode: result.errorCode });
+
+      if (result.errorCode === "NOT_FOUND") {
+        continue;
+      }
+
+      return {
+        status: "failed",
+        response: `I couldn't check your ${labelFor(task)} right now because the system returned an error. Please try again in a little while.`,
+        observations,
+        errorCode: result.errorCode,
+      };
+    }
+
+    observations.push({ tool: step.tool, state: "confirmed", data: result.data });
+    interpretation = interpretObservation(step.tool, result.data, context.message);
+
+    if (interpretation.kind !== "empty") {
+      break;
+    }
+  }
+
+  if (interpretation.kind === "ambiguous") {
+    return {
+      status: "needs_clarification",
+      response: interpretation.text,
+      references: interpretation.references,
+      observations,
+      errorCode: "MULTIPLE_MATCHES",
+    };
+  }
+
+  if (interpretation.kind === "verified") {
+    return {
+      status: "completed",
+      response: interpretation.text,
+      references: interpretation.references,
+      observations,
+    };
+  }
+
+  const confirmedWrite = observations.some(
+    (observation) => observation.state === "confirmed" && getTool(observation.tool)?.risk !== "read",
+  );
+
+  if (confirmedWrite) {
+    return {
+      status: "escalated",
+      response: "The request was accepted, but no reference came back yet, so I've flagged it for a check.",
+      observations,
+      errorCode: "NO_REFERENCE",
+    };
+  }
+
+  return {
+    status: "needs_clarification",
+    response: notFoundFor(task),
+    observations,
+    errorCode: "NOT_FOUND",
+  };
 }
 
 export function createAgentRunner(): AgentRunner {
@@ -216,189 +480,11 @@ export function createAgentRunner(): AgentRunner {
     task: AgentTask,
     context: AgentRunContext,
   ): Promise<AgentTaskResult> {
-    for (const dependency of task.dependsOn) {
-      const dependencyResult = context.results.get(dependency);
+    const [draft, citations] = await Promise.all([
+      execute(task, context),
+      lookupCitations(task, context),
+    ]);
 
-      if (!dependencyResult || dependencyResult.status !== "completed") {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "escalated",
-          response: "This action needs the related investigation to finish first.",
-          errorCode: "DEPENDENCY_NOT_SATISFIED",
-        };
-      }
-    }
-
-    if (task.missingEntities.length > 0) {
-      return {
-        taskId: task.taskId,
-        agent: task.agent,
-        status: "needs_clarification",
-        response: clarificationFor(task, task.missingEntities),
-        errorCode: "MISSING_INFORMATION",
-      };
-    }
-
-    const plan = compileToolPlan(task, context.message);
-
-    if (!plan.ok) {
-      return {
-        taskId: task.taskId,
-        agent: task.agent,
-        status: "needs_clarification",
-        response: clarificationFor(task, plan.missing),
-        errorCode: "MISSING_INFORMATION",
-      };
-    }
-
-    const definition = getIntentDefinition(task.intent);
-
-    if (!definition) {
-      return {
-        taskId: task.taskId,
-        agent: task.agent,
-        status: "failed",
-        response: "The request could not be matched to a supported workflow.",
-        errorCode: "UNKNOWN_INTENT",
-      };
-    }
-
-    const observations: ToolObservation[] = [];
-    const references = new Set<string>();
-
-    for (const [index, step] of plan.steps.entries()) {
-      const tool = getTool(step.tool);
-
-      if (!tool) {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "failed",
-          response: "The requested action is not available.",
-          errorCode: "UNKNOWN_TOOL",
-        };
-      }
-
-      if (!isToolAllowedForAgent(step.tool, task.agent)) {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "failed",
-          response: "The requested action is not permitted for this workflow.",
-          errorCode: "TOOL_NOT_ALLOWED",
-        };
-      }
-
-      const validated = validateToolArgs(step.tool, step.args);
-
-      if (!validated.ok) {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "failed",
-          response: "The request could not be validated safely.",
-          errorCode: "INVALID_ARGS",
-        };
-      }
-
-      const amount = task.entities.amount;
-
-      const policy = evaluateToolPolicy(tool.risk, {
-        workflowLevel: context.workflowLevel,
-        amount: typeof amount === "number" ? amount : undefined,
-        amountApprovalThreshold: context.amountApprovalThreshold,
-      });
-
-      if (policy.decision === "block") {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "escalated",
-          response: "This action is blocked by policy.",
-          errorCode: "POLICY_BLOCKED",
-        };
-      }
-
-      if (policy.decision === "hold_for_approval") {
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "escalated",
-          response: "This action needs human approval before it can run.",
-          errorCode: "APPROVAL_REQUIRED",
-        };
-      }
-
-      const result = await context.tools.invoke({
-        caseId: context.caseId,
-        stepId: `${task.taskId}:${index}:${step.tool}`,
-        tool: step.tool,
-        args: validated.data,
-        customerId: context.customerId,
-      });
-
-      if (result.state === "confirmed") {
-        observations.push({ tool: step.tool, state: "confirmed", data: result.data });
-
-        for (const reference of extractReferences(result.data)) {
-          references.add(reference);
-        }
-
-        continue;
-      }
-
-      if (result.state === "failed") {
-        observations.push({
-          tool: step.tool,
-          state: "failed",
-          errorCode: result.errorCode,
-        });
-
-        return {
-          taskId: task.taskId,
-          agent: task.agent,
-          status: "failed",
-          response: `The ${labelFor(task).toLowerCase()} check did not complete.`,
-          observations,
-          errorCode: result.errorCode,
-        };
-      }
-
-      observations.push({
-        tool: step.tool,
-        state: "unknown",
-        errorCode: result.errorCode,
-      });
-
-      return {
-        taskId: task.taskId,
-        agent: task.agent,
-        status: "escalated",
-        response: `The ${labelFor(task).toLowerCase()} check has an unknown outcome and needs verification.`,
-        observations,
-        references: [...references],
-        errorCode: "UNKNOWN_OUTCOME",
-      };
-    }
-
-    if (observations.length === 0) {
-      return {
-        taskId: task.taskId,
-        agent: task.agent,
-        status: "failed",
-        response: "No authoritative result was available for this request.",
-        errorCode: "NO_OBSERVATION",
-      };
-    }
-
-    return {
-      taskId: task.taskId,
-      agent: task.agent,
-      status: "completed",
-      response: observationSummary(observations),
-      observations,
-      references: [...references],
-    };
+    return finish(task, applyRisk(task, context, draft), citations);
   };
 }

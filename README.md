@@ -134,6 +134,24 @@ npm run dev:worker
 
 Optional: `WORKER_ID`, `LEASE_MS` (default 30000), `WORKER_POLL_MS` (default 500), `SARVAM_API_KEY`, `SARVAM_MODEL` (default `sarvam-105b`).
 
+Each turn stores an internal `worker_step` event with the run trace (classifier source, validation, tasks, tool calls with duration and state, policy citations). It holds no message text or tool arguments. The next turn reads its `pendingIntents`, so a reply like `refund_5001` continues the open question.
+
+### Policy knowledge (RAG)
+
+```sh
+npm run knowledge:ingest   # chunks docs/policies/*.md into policy_chunks (pgvector)
+```
+
+Uses OpenAI embeddings when `OPENAI_API_KEY` is set, otherwise an offline hashing embedder. The worker queries with the same provider, so re-run ingestion after switching. Agents attach the retrieved passages as `citations` on each task. Customer-facing facts still come only from tools.
+
+### Agent evals
+
+```sh
+npm run test --workspace=worker   # includes test/eval-routing.test.ts over evals/scenarios/agent-routing-v1.jsonl
+```
+
+Reports intent precision, recall, and F1, multi-intent exact match, entity accuracy, unsupported-action rate, fraud escalation, and secret redaction. It fails below the gates in the test.
+
 ### Web chat (wired)
 
 ```sh
