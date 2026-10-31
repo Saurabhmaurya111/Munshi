@@ -1,3 +1,4 @@
+import { apiBase } from "../lib/api-base";
 import { readSession } from "../lib/session";
 
 export type CaseEvent = {
@@ -33,13 +34,6 @@ export type TransferResult = {
   ticketId?: string | null;
   ticketStatus?: string | null;
 };
-
-function apiBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://127.0.0.1:3001"
-  );
-}
 
 export function customerId(): string {
   const session = readSession();

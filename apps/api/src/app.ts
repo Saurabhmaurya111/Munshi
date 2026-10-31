@@ -144,6 +144,35 @@ function serializeEvents(
   }));
 }
 
+function corsOrigin(origin: string): string | undefined {
+  const local = new Set([
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ]);
+
+  if (local.has(origin)) return origin;
+
+  const extra = (process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (extra.includes(origin)) return origin;
+
+  try {
+    const url = new URL(origin);
+    if (url.hostname.endsWith(".vercel.app")) return origin;
+  } catch {
+    // ignore invalid Origin
+  }
+
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl && origin === `https://${vercelUrl}`) return origin;
+
+  return undefined;
+}
+
 export function createApp(db: Db) {
   const app = new Hono<{ Variables: AppVariables }>();
   const tools = createInvokeTool({ db, timeoutMs: 8_000 });
@@ -151,12 +180,7 @@ export function createApp(db: Db) {
   app.use(
     "*",
     cors({
-      origin: [
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-      ],
+      origin: (origin) => (origin ? corsOrigin(origin) : undefined),
       allowHeaders: [
         "Content-Type",
         "Authorization",
