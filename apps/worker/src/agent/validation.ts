@@ -13,6 +13,9 @@ export type ValidateOptions = {
   maxIntents?: number;
 };
 
+/** When the model omits confidence, treat as threshold-edge, not certainty. */
+const DEFAULT_OMITTED_CONFIDENCE = 0.5;
+
 type NormalizedIntent = {
   intent: string;
   agent: ValidatedIntent["agent"];
@@ -114,7 +117,7 @@ export function validateClassification(
     };
   }
 
-  const issues: ValidationIssue[] = [];
+  const droppedIssues: ValidationIssue[] = [];
   const unsupported: string[] = [];
   const lowConfidence: string[] = [];
   const normalized: NormalizedIntent[] = [];
@@ -129,7 +132,7 @@ export function validateClassification(
 
     if (item.agent !== undefined) {
       if (!AGENT_ALLOWLIST.includes(item.agent as ValidatedIntent["agent"])) {
-        issues.push({
+        droppedIssues.push({
           code: "AGENT_NOT_ALLOWED",
           message: "agent is not in the allowlist",
           intent: item.intent,
@@ -138,7 +141,7 @@ export function validateClassification(
       }
 
       if (item.agent !== definition.agent) {
-        issues.push({
+        droppedIssues.push({
           code: "AGENT_MAPPING_MISMATCH",
           message: `agent does not match intent ${item.intent}`,
           intent: item.intent,
@@ -147,14 +150,14 @@ export function validateClassification(
       }
     }
 
-    const confidence = item.confidence ?? 1;
+    const confidence = item.confidence ?? DEFAULT_OMITTED_CONFIDENCE;
 
     if (confidence < confidenceThreshold) {
       lowConfidence.push(item.intent);
       continue;
     }
 
-    const entities = normalizeEntities(item, issues);
+    const entities = normalizeEntities(item, droppedIssues);
 
     if (!entities) {
       continue;
@@ -169,7 +172,7 @@ export function validateClassification(
     });
   }
 
-  if (unsupported.length > 0) {
+  if (normalized.length === 0 && unsupported.length > 0 && droppedIssues.length === 0 && lowConfidence.length === 0) {
     return {
       status: "unsupported",
       reason: "Part of the request is outside what Munshi can handle.",
@@ -177,15 +180,7 @@ export function validateClassification(
     };
   }
 
-  if (issues.length > 0) {
-    return {
-      status: "invalid",
-      reason: "The request could not be validated safely.",
-      issues,
-    };
-  }
-
-  if (lowConfidence.length > 0) {
+  if (normalized.length === 0 && lowConfidence.length > 0 && droppedIssues.length === 0) {
     return {
       status: "needs_clarification",
       reason: "The request was ambiguous, so no action was taken.",
@@ -196,8 +191,20 @@ export function validateClassification(
   if (normalized.length === 0) {
     return {
       status: "invalid",
-      reason: "No supported intent was detected.",
-      issues: [{ code: "NO_VALID_INTENTS", message: "classification contained no valid intents" }],
+      reason: "The request could not be validated safely.",
+      issues:
+        droppedIssues.length > 0
+          ? droppedIssues
+          : [{ code: "NO_VALID_INTENTS", message: "classification contained no valid intents" }],
+    };
+  }
+
+  // Supported intents remain; unsupported siblings are dropped (partial).
+  if (lowConfidence.length > 0 && normalized.length === 0) {
+    return {
+      status: "needs_clarification",
+      reason: "The request was ambiguous, so no action was taken.",
+      missing: lowConfidence,
     };
   }
 

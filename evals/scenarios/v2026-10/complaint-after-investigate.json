@@ -1,0 +1,52 @@
+{
+  "id": "complaint-after-investigate",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "My UPI payment TXN34567 failed. Please raise a complaint.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-005",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "COMPLAINT_CREATE",
+        "entities": {}
+      },
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN34567" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "failed",
+        "transactionId": "TXN34567"
+      }
+    },
+    "createComplaint": {
+      "state": "confirmed",
+      "data": {
+        "complaintId": "CMP34567",
+        "status": "created"
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["UPI_PAYMENT_ISSUE", "COMPLAINT_CREATE"],
+    "agents": ["upi_agent", "complaint_agent"],
+    "toolsMustRun": ["getTransactionStatus", "createComplaint"],
+    "toolsOrder": ["getTransactionStatus", "createComplaint"],
+    "toolsMustNotRun": ["escalateComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["failed", "created"],
+    "wrongActionIf": ["escalateComplaint"]
+  }
+}

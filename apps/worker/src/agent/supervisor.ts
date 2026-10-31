@@ -1,6 +1,7 @@
 import { END, START, Annotation, StateGraph } from "@langchain/langgraph";
 import { aggregateResults, toTaskSummaries } from "./aggregation.js";
 import type { AgentRunner } from "./agents.js";
+import { evaluateReplyPolicy } from "./policy.js";
 import { buildExecutionBatches, planTasks } from "./planning.js";
 import { supervisorRequestSchema, supervisorResponseSchema } from "./schemas.js";
 import { validateClassification } from "./validation.js";
@@ -78,6 +79,30 @@ function responseFromValidation(state: typeof SupervisorState.State): Supervisor
     message: validation.reason,
     tasks: [],
     requiresCustomerInput: validation.status === "needs_clarification",
+  };
+}
+
+function applyReplyPolicy(
+  response: SupervisorResponse,
+  workflowLevel: WorkflowLevel,
+): SupervisorResponse {
+  const decision = evaluateReplyPolicy(workflowLevel);
+
+  if (decision.decision !== "hold_for_approval") {
+    return response;
+  }
+
+  // Tool policy already escalated — keep the agent wording (mentions approval).
+  if (response.status === "escalated") {
+    return response;
+  }
+
+  return {
+    ...response,
+    status: "escalated",
+    message:
+      "This reply is waiting for human approval before it is sent to the customer.",
+    requiresCustomerInput: false,
   };
 }
 
@@ -191,51 +216,29 @@ export function buildSupervisorGraph(dependencies: SupervisorDependencies) {
       }
 
       const aggregated = aggregateResults(state.results);
-
-      return {
-        response: {
+      const response = applyReplyPolicy(
+        {
           conversationId: state.conversationId,
           status: aggregated.status,
           message: aggregated.message,
           tasks: toTaskSummaries(state.results),
           requiresCustomerInput: aggregated.requiresCustomerInput,
-        } satisfies SupervisorResponse,
-      };
-    })
-    .addNode("format_response", (state: typeof SupervisorState.State) => {
-      if (!state.response) {
-        return {
-          response: fallbackResponse(
-            state.conversationId,
-            "invalid",
-            "The request could not be completed.",
-          ),
-        };
-      }
+        },
+        dependencies.workflowLevel,
+      );
 
-      const checked = supervisorResponseSchema.safeParse(state.response);
-
-      if (!checked.success) {
-        return {
-          response: fallbackResponse(
-            state.conversationId,
-            "invalid",
-            "The response could not be validated safely.",
-          ),
-        };
-      }
-
-      return { response: checked.data as SupervisorResponse };
+      return { response };
     })
     .addEdge(START, "classify_intents")
     .addEdge("classify_intents", "validate_intents")
-    .addEdge("validate_intents", "plan_tasks")
+    .addConditionalEdges("validate_intents", (state: typeof SupervisorState.State) =>
+      state.validation?.status === "runnable" ? "plan_tasks" : "aggregate_results",
+    )
     .addConditionalEdges("plan_tasks", (state: typeof SupervisorState.State) =>
       state.tasks.length > 0 ? "dispatch_tasks" : "aggregate_results",
     )
     .addEdge("dispatch_tasks", "aggregate_results")
-    .addEdge("aggregate_results", "format_response")
-    .addEdge("format_response", END);
+    .addEdge("aggregate_results", END);
 
   return graph.compile();
 }

@@ -70,15 +70,18 @@ export const toolObservationSchema = z.object({
   errorCode: z.string().optional(),
 });
 
+const agentNameSchema = z.enum([
+  "upi_agent",
+  "refund_agent",
+  "recharge_agent",
+  "account_agent",
+  "complaint_agent",
+  "wallet_agent",
+]);
+
 export const agentTaskResultSchema = z.object({
   taskId: z.string().min(1),
-  agent: z.enum([
-    "upi_agent",
-    "refund_agent",
-    "recharge_agent",
-    "account_agent",
-    "complaint_agent",
-  ]),
+  agent: agentNameSchema,
   status: z.enum(["completed", "needs_clarification", "failed", "escalated"]),
   response: z.string(),
   references: z.array(z.string()).optional(),
@@ -101,13 +104,7 @@ export const supervisorResponseSchema = z.object({
   tasks: z.array(
     z.object({
       taskId: z.string().min(1),
-      agent: z.enum([
-        "upi_agent",
-        "refund_agent",
-        "recharge_agent",
-        "account_agent",
-        "complaint_agent",
-      ]),
+      agent: agentNameSchema,
       status: z.enum([
         "completed",
         "needs_clarification",
@@ -116,6 +113,7 @@ export const supervisorResponseSchema = z.object({
       ]),
       summary: z.string(),
       references: z.array(z.string()).optional(),
+      errorCode: z.string().optional(),
     }),
   ),
   requiresCustomerInput: z.boolean(),

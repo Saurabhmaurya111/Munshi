@@ -1,0 +1,42 @@
+{
+  "id": "upi-status-easy",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "My UPI payment TXN12345 failed. What is the status?",
+    "authenticatedContext": {
+      "customerId": "customer-eval-001",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN12345" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "failed",
+        "transactionId": "TXN12345",
+        "amount": 500
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["UPI_PAYMENT_ISSUE"],
+    "agents": ["upi_agent"],
+    "toolsMustRun": ["getTransactionStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["failed"],
+    "replyMustNotMatch": ["refunded", "processed"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

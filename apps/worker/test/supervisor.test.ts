@@ -189,6 +189,32 @@ describe("runSupervisor", () => {
     expect(deps.calls).toHaveLength(0);
   });
 
+  it("holds the customer reply at workflow level 0 even when reads succeed", async () => {
+    const deps = dependencies(
+      {
+        intents: [
+          {
+            intent: "UPI_PAYMENT_ISSUE",
+            entities: { transactionId: "TXN12345" },
+          },
+        ],
+      },
+      {
+        getTransactionStatus: () =>
+          confirmed({ status: "success", transactionId: "TXN12345" }),
+      },
+      0,
+    );
+
+    const response = await runSupervisor(request, deps);
+
+    expect(response.status).toBe("escalated");
+    expect(response.message).toMatch(/human approval/i);
+    expect(response.tasks).toHaveLength(1);
+    expect(response.tasks[0]?.status).toBe("completed");
+    expect(deps.calls).toHaveLength(1);
+  });
+
   it("asks for clarification on low confidence", async () => {
     const deps = dependencies(
       {

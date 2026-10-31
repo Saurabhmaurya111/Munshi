@@ -3,14 +3,24 @@ import { cors } from "hono/cors";
 import { z } from "zod";
 import {
   CoreError,
+  appendHumanMessage,
   checkDb,
   createCase,
   createCaseAndAppendMessage,
   getCaseForCustomer,
+  getCaseForDesk,
+  handBackCase,
   listCaseEvents,
+  listDeskQueue,
+  requestHumanTransfer,
+  takeoverCase,
   type Db,
 } from "@repo/core";
-import { requireCustomer, type AppVariables } from "./auth.js";
+import {
+  requireCustomer,
+  requireDeskAgent,
+  type AppVariables,
+} from "./auth.js";
 
 const createCaseBody = z.object({
   priority: z.number().int().min(0).max(100).optional(),
@@ -23,6 +33,27 @@ const messageBody = z.object({
   commandId: z.string().min(1).max(128).optional(),
   customerId: z.string().optional(), // ignored; session wins
   priority: z.number().int().min(0).max(100).optional(),
+});
+
+const transferBody = z.object({
+  commandId: z.string().min(1).max(128),
+  reason: z.string().min(1).max(500).optional(),
+});
+
+const deskTakeoverBody = z.object({
+  commandId: z.string().min(1).max(128),
+  note: z.string().max(1000).optional(),
+});
+
+const deskHandBackBody = z.object({
+  commandId: z.string().min(1).max(128),
+  note: z.string().min(1).max(2000),
+  instruction: z.string().max(2000).optional(),
+});
+
+const deskMessageBody = z.object({
+  message: z.string().min(1).max(4000),
+  commandId: z.string().min(1).max(128),
 });
 
 function mapCoreError(error: unknown): {
@@ -41,6 +72,18 @@ function mapCoreError(error: unknown): {
   return { status, body: { error: error.message, code: error.code } };
 }
 
+function serializeEvents(
+  events: Awaited<ReturnType<typeof listCaseEvents>>,
+) {
+  return events.map((event) => ({
+    seq: Number(event.seq),
+    type: event.type,
+    audience: event.audience,
+    payload: event.payload,
+    createdAt: event.createdAt.toISOString(),
+  }));
+}
+
 export function createApp(db: Db) {
   const app = new Hono<{ Variables: AppVariables }>();
 
@@ -53,7 +96,7 @@ export function createApp(db: Db) {
         "http://localhost:3000",
         "http://127.0.0.1:3000",
       ],
-      allowHeaders: ["Content-Type", "X-Customer-Id"],
+      allowHeaders: ["Content-Type", "X-Customer-Id", "X-Desk-Agent-Id"],
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   );
@@ -110,7 +153,11 @@ export function createApp(db: Db) {
         caseId,
         customerId: customer.id,
       });
-      const events = await listCaseEvents(db, { caseId, limit: 50 });
+      const events = await listCaseEvents(db, {
+        caseId,
+        limit: 100,
+        audience: "customer",
+      });
       return c.json({
         conversationId: caseRow.id,
         status: caseRow.status,
@@ -119,14 +166,44 @@ export function createApp(db: Db) {
         priority: caseRow.priority,
         runnable: caseRow.runnable,
         lastEventSeq: Number(caseRow.lastEventSeq),
-        events: events.map((event) => ({
-          seq: Number(event.seq),
-          type: event.type,
-          audience: event.audience,
-          payload: event.payload,
-          createdAt: event.createdAt.toISOString(),
-        })),
+        events: serializeEvents(events),
       });
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.post("/v1/cases/:caseId/transfer-to-human", requireCustomer, async (c) => {
+    const customer = c.get("customer")!;
+    const caseId = c.req.param("caseId");
+    const parsed = transferBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+    try {
+      await getCaseForCustomer(db, {
+        caseId,
+        customerId: customer.id,
+      });
+      const result = await requestHumanTransfer(db, {
+        caseId,
+        customerId: customer.id,
+        commandId: parsed.data.commandId,
+        reason: parsed.data.reason,
+      });
+      return c.json(
+        {
+          conversationId: result.case.id,
+          ownership: result.case.ownership,
+          status: result.created ? "transferred" : "already_human",
+          lastEventSeq: Number(result.case.lastEventSeq),
+          ticketId: result.ticket?.complaintId ?? null,
+          ticketStatus: result.ticket?.status ?? null,
+        },
+        result.created ? 201 : 200,
+      );
     } catch (error) {
       const mapped = mapCoreError(error);
       if (mapped) return c.json(mapped.body, mapped.status);
@@ -151,6 +228,7 @@ export function createApp(db: Db) {
       return c.json(
         {
           conversationId: result.case.id,
+          ownership: result.case.ownership,
           status: result.created ? "accepted" : "duplicate",
           seq: Number(result.event.seq),
           requiresCustomerInput: false,
@@ -181,9 +259,165 @@ export function createApp(db: Db) {
       return c.json(
         {
           conversationId: result.case.id,
+          ownership: result.case.ownership,
           status: result.created ? "accepted" : "duplicate",
           seq: Number(result.event.seq),
           requiresCustomerInput: false,
+        },
+        result.created ? 201 : 200,
+      );
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.get("/v1/desk/me", requireDeskAgent, (c) => {
+    const agent = c.get("deskAgent")!;
+    return c.json({
+      agentId: agent.id,
+      displayName: agent.displayName,
+      role: agent.role,
+      roles: ["desk", agent.role],
+    });
+  });
+
+  app.get("/v1/desk/queue", requireDeskAgent, async (c) => {
+    const queue = await listDeskQueue(db, { limit: 50 });
+    return c.json({
+      items: queue.map((item) => ({
+        conversationId: item.case.id,
+        ownership: item.case.ownership,
+        status: item.case.status,
+        customerId: item.case.customerId,
+        priority: item.case.priority,
+        waitingFor: item.waitingFor,
+        updatedAt: item.case.updatedAt.toISOString(),
+        latestCustomerText: item.latestCustomerText,
+        escalationSummary: item.escalationSummary,
+        recommendation: item.recommendation,
+        ticketId: item.ticketId,
+        ticketStatus: item.ticketStatus,
+      })),
+    });
+  });
+
+  app.get("/v1/desk/cases/:caseId", requireDeskAgent, async (c) => {
+    const caseId = c.req.param("caseId");
+    try {
+      const caseRow = await getCaseForDesk(db, { caseId });
+      const events = await listCaseEvents(db, {
+        caseId,
+        limit: 200,
+        audience: ["customer", "desk"],
+      });
+      return c.json({
+        conversationId: caseRow.id,
+        status: caseRow.status,
+        ownership: caseRow.ownership,
+        customerId: caseRow.customerId,
+        priority: caseRow.priority,
+        runnable: caseRow.runnable,
+        lastEventSeq: Number(caseRow.lastEventSeq),
+        events: serializeEvents(events),
+      });
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.post("/v1/desk/cases/:caseId/takeover", requireDeskAgent, async (c) => {
+    const agent = c.get("deskAgent")!;
+    const caseId = c.req.param("caseId");
+    const parsed = deskTakeoverBody.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+    try {
+      const result = await takeoverCase(db, {
+        caseId,
+        agentId: agent.id,
+        commandId: parsed.data.commandId,
+        note: parsed.data.note,
+      });
+      return c.json(
+        {
+          conversationId: result.case.id,
+          ownership: result.case.ownership,
+          status: result.created ? "taken_over" : "duplicate",
+          lastEventSeq: Number(result.case.lastEventSeq),
+          ticketId: result.ticket?.complaintId ?? null,
+          ticketStatus: result.ticket?.status ?? null,
+        },
+        result.created ? 201 : 200,
+      );
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.post("/v1/desk/cases/:caseId/hand-back", requireDeskAgent, async (c) => {
+    const agent = c.get("deskAgent")!;
+    const caseId = c.req.param("caseId");
+    const parsed = deskHandBackBody.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+    try {
+      const result = await handBackCase(db, {
+        caseId,
+        agentId: agent.id,
+        commandId: parsed.data.commandId,
+        note: parsed.data.note,
+        instruction: parsed.data.instruction,
+      });
+      return c.json(
+        {
+          conversationId: result.case.id,
+          ownership: result.case.ownership,
+          status: result.created ? "handed_back" : "duplicate",
+          lastEventSeq: Number(result.case.lastEventSeq),
+        },
+        result.created ? 201 : 200,
+      );
+    } catch (error) {
+      const mapped = mapCoreError(error);
+      if (mapped) return c.json(mapped.body, mapped.status);
+      throw error;
+    }
+  });
+
+  app.post("/v1/desk/cases/:caseId/messages", requireDeskAgent, async (c) => {
+    const agent = c.get("deskAgent")!;
+    const caseId = c.req.param("caseId");
+    const parsed = deskMessageBody.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "Invalid body", code: "BAD_REQUEST" }, 400);
+    }
+    try {
+      const result = await appendHumanMessage(db, {
+        caseId,
+        agentId: agent.id,
+        message: parsed.data.message,
+        commandId: parsed.data.commandId,
+      });
+      return c.json(
+        {
+          conversationId: result.case.id,
+          ownership: result.case.ownership,
+          status: result.created ? "accepted" : "duplicate",
+          seq: Number(result.events[0]?.seq ?? result.case.lastEventSeq),
         },
         result.created ? 201 : 200,
       );

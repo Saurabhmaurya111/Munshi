@@ -63,6 +63,11 @@
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--teal) 22%, transparent);
 }
 
+.dotHuman {
+  background: var(--amber);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
 .topActions {
   display: flex;
   align-items: center;
@@ -70,7 +75,8 @@
 }
 
 .back,
-.switch {
+.switch,
+.transfer {
   font-weight: 700;
   color: var(--navy);
   text-decoration: none;
@@ -82,8 +88,22 @@
   padding: 0;
 }
 
+.transfer {
+  opacity: 1;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--navy) 16%, transparent);
+  background: #fff;
+}
+
+.transfer:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .back:hover,
-.switch:hover {
+.switch:hover,
+.transfer:hover:not(:disabled) {
   opacity: 1;
 }
 
@@ -162,6 +182,33 @@
   color: var(--navy);
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-bottom-left-radius: 0.4rem;
+}
+
+.bubbleHuman {
+  background: color-mix(in srgb, var(--navy) 92%, white);
+  color: #fff;
+  border-bottom-left-radius: 0.4rem;
+}
+
+.agentLabel {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  margin-bottom: 0.25rem;
+}
+
+.humanMark {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: var(--navy);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 800;
 }
 
 .errorNote {

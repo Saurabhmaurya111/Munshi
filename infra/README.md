@@ -16,6 +16,7 @@ Local Postgres image: `munshi-postgres:17-pgvector` from `postgres/Dockerfile`.
 | `001_extensions.sql` | `vector`, `pgcrypto` |
 | `002_schema.sql` | Case runtime: cases, events, facts, intents, tools, workflows, policy_chunks |
 | `003_mock_world.sql` | Demo source systems: customers, transactions, refunds, recharges, complaints + seed rows |
+| `004_mock_wallet.sql` | Paytm wallet balances, wallet-channel payments, wallet-bound refunds + seed rows |
 
 Mock tables are what `getTransactions` / `getRefundStatus` / etc. read. They are not a real bank ledger. No OTPs, PINs, or full credentials.
 

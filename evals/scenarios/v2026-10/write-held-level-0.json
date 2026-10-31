@@ -1,0 +1,39 @@
+{
+  "id": "write-held-level-0",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "Please raise a complaint about my payment issue.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-006",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 0
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "COMPLAINT_CREATE",
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {
+    "createComplaint": {
+      "state": "confirmed",
+      "data": {
+        "complaintId": "CMP45678",
+        "status": "created"
+      }
+    }
+  },
+  "expect": {
+    "status": "escalated",
+    "agents": ["complaint_agent"],
+    "toolsMustRun": [],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": true,
+    "replyMustMatch": ["approval"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

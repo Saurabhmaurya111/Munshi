@@ -2,14 +2,55 @@ import { createInvokeTool, type ToolInvoker } from "@repo/gateway";
 import type { Db } from "@repo/core";
 import { createAgentRunner } from "./agent/agents.js";
 import {
+  createHybridClassifier,
   createLlmClassifier,
   createRuleBasedClassifier,
   type ClassificationModel,
 } from "./agent/classifier.js";
 import type { SupervisorDependencies } from "./agent/supervisor.js";
-import type { IntentClassifierInput } from "./agent/types.js";
+import type { IntentClassifierInput, WorkflowLevel } from "./agent/types.js";
 
 const SARVAM_CHAT_URL = "https://api.sarvam.ai/v1/chat/completions";
+const SARVAM_TIMEOUT_MS = 8_000;
+
+export const CLASSIFIER_SYSTEM_PROMPT_V1 = `You classify Munshi customer-support messages for Indian payments.
+
+Return JSON only with this shape:
+{"intents":[{"intent":"<INTENT>","confidence":0.0-1.0,"entities":{...}}]}
+
+Supported intents (use only these):
+- UPI_PAYMENT_ISSUE
+- REFUND_STATUS
+- RECHARGE_ISSUE
+- ACCOUNT_ISSUE
+- WALLET_BALANCE
+- WALLET_PAYMENT_TRACK
+- WALLET_REFUND_TRACK
+- COMPLAINT_CREATE
+- COMPLAINT_STATUS
+
+Entities (include only when present in the message; never invent IDs or amounts):
+- transactionId: string reference
+- refundId: string reference
+- rechargeNumber: 10-digit Indian mobile
+- complaintId: string reference
+- amount: number in rupees
+- relativeDate: today | yesterday | last_week | last_month
+
+Rules:
+- Prefer a single intent when one clearly fits.
+- If the customer mentions Paytm wallet / wallet balance / wallet history / wallet refund, prefer WALLET_* intents over generic UPI or REFUND.
+- Understand Hindi/English mix (Hinglish).
+- Do not invent transaction, refund, complaint, or recharge identifiers.
+- Always include confidence between 0 and 1.`;
+
+function parseWorkflowLevel(raw: string | undefined): WorkflowLevel {
+  const value = raw?.trim();
+
+  if (value === "0") return 0;
+  if (value === "2") return 2;
+  return 1;
+}
 
 function buildSarvamClassifierModel(apiKey: string): ClassificationModel {
   const model = process.env.SARVAM_MODEL?.trim() || "sarvam-105b";
@@ -22,6 +63,7 @@ function buildSarvamClassifierModel(apiKey: string): ClassificationModel {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(SARVAM_TIMEOUT_MS),
       body: JSON.stringify({
         model,
         temperature: 0.2,
@@ -30,10 +72,7 @@ function buildSarvamClassifierModel(apiKey: string): ClassificationModel {
         messages: [
           {
             role: "system",
-            content: `You classify Munshi support messages for Indian payments (UPI, refunds, recharge, account, complaints). Return JSON only:
-{"intents":[{"intent":"UPI_PAYMENT_ISSUE"|"REFUND_STATUS"|"RECHARGE_ISSUE"|"ACCOUNT_ISSUE"|"COMPLAINT_CREATE"|"COMPLAINT_STATUS","confidence":0-1,"entities":{...}}]}
-Entities may include transactionId, refundId, rechargeNumber, complaintId, amount (rupees number), relativeDate (today|yesterday|last_week|last_month).
-Only use supported intents. Prefer one intent when possible. Understand Hindi/English mix.`,
+            content: CLASSIFIER_SYSTEM_PROMPT_V1,
           },
           {
             role: "user",
@@ -71,8 +110,11 @@ export function createWorkerDependencies(db: Db): SupervisorDependencies {
   const rules = createRuleBasedClassifier();
   const apiKey = process.env.SARVAM_API_KEY?.trim();
   const classifier = apiKey
-    ? createLlmClassifier(buildSarvamClassifierModel(apiKey), {
-        fallback: rules,
+    ? createHybridClassifier({
+        rules,
+        llm: createLlmClassifier(buildSarvamClassifierModel(apiKey), {
+          fallback: rules,
+        }),
       })
     : rules;
 
@@ -82,6 +124,7 @@ export function createWorkerDependencies(db: Db): SupervisorDependencies {
     classifier,
     runner: createAgentRunner(),
     tools,
-    workflowLevel: 0,
+    workflowLevel: parseWorkflowLevel(process.env.MUNSHI_WORKFLOW_LEVEL),
+    confidenceThreshold: 0.5,
   };
 }

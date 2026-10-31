@@ -1,0 +1,40 @@
+{
+  "id": "unseen-held-out",
+  "version": "2026-10",
+  "tags": ["unseen"],
+  "input": {
+    "message": "IRCTC booking ke liye jo UPI cut hua TXN89012, uska bank reference chahiye.",
+    "authenticatedContext": {
+      "customerId": "customer-eval-011",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "UPI_PAYMENT_ISSUE",
+        "entities": { "transactionId": "TXN89012" }
+      }
+    ]
+  },
+  "mockTools": {
+    "getTransactionStatus": {
+      "state": "confirmed",
+      "data": {
+        "status": "pending",
+        "transactionId": "TXN89012"
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["UPI_PAYMENT_ISSUE"],
+    "toolsMustRun": ["getTransactionStatus"],
+    "toolsMustNotRun": ["createComplaint", "escalateComplaint"],
+    "escalate": false,
+    "replyMustMatch": ["pending"],
+    "replyMustNotMatch": ["refunded", "settled"],
+    "wrongActionIf": ["createComplaint", "escalateComplaint"]
+  }
+}

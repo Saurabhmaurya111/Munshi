@@ -119,6 +119,62 @@ function compileToolPlan(task: AgentTask, message: string): ToolPlan {
     case "ACCOUNT_ISSUE":
       return { ok: true, steps: [{ tool: "getAccountSupportStatus", args: {} }] };
 
+    case "WALLET_BALANCE":
+      return { ok: true, steps: [{ tool: "getWalletBalance", args: {} }] };
+
+    case "WALLET_PAYMENT_TRACK": {
+      const transactionId = stringEntity(task.entities, "transactionId");
+
+      if (transactionId) {
+        return {
+          ok: true,
+          steps: [{ tool: "getWalletPaymentStatus", args: { transactionId } }],
+        };
+      }
+
+      const filters = lookupFilters(task.entities);
+
+      if (Object.keys(filters).length > 0) {
+        return {
+          ok: true,
+          steps: [{ tool: "getWalletPayments", args: { ...filters, channel: "all" } }],
+        };
+      }
+
+      // Broad "track my wallet payments" → combined ledger.
+      return { ok: true, steps: [{ tool: "getWalletLedger", args: {} }] };
+    }
+
+    case "WALLET_REFUND_TRACK": {
+      const refundId = stringEntity(task.entities, "refundId");
+      const transactionId = stringEntity(task.entities, "transactionId");
+
+      if (refundId) {
+        return {
+          ok: true,
+          steps: [{ tool: "getWalletRefundDetails", args: { refundId } }],
+        };
+      }
+
+      if (transactionId) {
+        return {
+          ok: true,
+          steps: [{ tool: "getWalletRefundStatus", args: { transactionId } }],
+        };
+      }
+
+      const filters = lookupFilters(task.entities);
+
+      if (Object.keys(filters).length > 0) {
+        return { ok: true, steps: [{ tool: "getWalletRefundStatus", args: filters }] };
+      }
+
+      return {
+        ok: false,
+        missing: ["refundId", "transactionId", "amount", "relativeDate"],
+      };
+    }
+
     case "COMPLAINT_STATUS": {
       const complaintId = stringEntity(task.entities, "complaintId");
 
@@ -167,7 +223,14 @@ function extractReferences(data: unknown): string[] {
   }
 
   const record = data as Record<string, unknown>;
-  const keys = ["reference", "transactionId", "refundId", "complaintId", "rechargeNumber"];
+  const keys = [
+    "reference",
+    "transactionId",
+    "refundId",
+    "complaintId",
+    "rechargeNumber",
+    "walletId",
+  ];
 
   return keys.flatMap((key) => {
     const value = record[key];
@@ -187,6 +250,8 @@ function labelFor(task: AgentTask): string {
       return "Account";
     case "complaint":
       return "Complaint";
+    case "wallet":
+      return "Wallet payment";
   }
 }
 
@@ -197,6 +262,10 @@ function clarificationFor(task: AgentTask, missing: string[]): string {
 
   if (missing.includes("summary")) {
     return "Please describe the issue you want a complaint raised for.";
+  }
+
+  if (task.domain === "wallet" && missing.includes("refundId")) {
+    return "Please share the wallet refund reference, related transaction id, amount, or date.";
   }
 
   return `Please share the transaction reference, amount, or date so I can find the right ${labelFor(task).toLowerCase()}.`;

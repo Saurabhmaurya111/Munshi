@@ -12,6 +12,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
     "test": "turbo run test",
+    "eval": "npm run test --workspace=worker -- test/evals",
     "db:up": "docker compose up -d redis",
     "db:up:local": "docker compose --profile local-db up -d",
     "db:down": "docker compose --profile local-db down",

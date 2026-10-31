@@ -1,0 +1,55 @@
+{
+  "id": "wallet-payment-track",
+  "version": "2026-10",
+  "tags": ["easy"],
+  "input": {
+    "message": "Track my Paytm wallet payments and refunds",
+    "authenticatedContext": {
+      "customerId": "customer-soham",
+      "roles": ["customer"]
+    },
+    "workflowLevel": 2
+  },
+  "classification": {
+    "intents": [
+      {
+        "intent": "WALLET_PAYMENT_TRACK",
+        "confidence": 0.9,
+        "entities": {}
+      }
+    ]
+  },
+  "mockTools": {
+    "getWalletLedger": {
+      "state": "confirmed",
+      "data": {
+        "customerId": "customer-soham",
+        "entryCount": 2,
+        "entries": [
+          {
+            "type": "payment",
+            "transactionId": "txn_wal_4001",
+            "status": "success",
+            "channel": "wallet"
+          },
+          {
+            "type": "refund",
+            "refundId": "refund_wal_6001",
+            "status": "completed",
+            "destination": "wallet"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": "completed",
+    "intents": ["WALLET_PAYMENT_TRACK"],
+    "agents": ["wallet_agent"],
+    "toolsMustRun": ["getWalletLedger"],
+    "toolsMustNotRun": ["createComplaint", "issueRefund"],
+    "escalate": false,
+    "replyMustMatch": ["getWalletLedger"],
+    "wrongActionIf": ["createComplaint"]
+  }
+}

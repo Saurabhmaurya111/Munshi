@@ -27,6 +27,32 @@ function applyFacts(
   return merged;
 }
 
+function taskIdFor(intent: string, used: Set<string>): string {
+  const base = `task-${intent}`;
+
+  if (!used.has(base)) {
+    used.add(base);
+    return base;
+  }
+
+  let suffix = 2;
+  let candidate = `${base}-${suffix}`;
+
+  while (used.has(candidate)) {
+    suffix += 1;
+    candidate = `${base}-${suffix}`;
+  }
+
+  used.add(candidate);
+  return candidate;
+}
+
+/**
+ * Builds ordered agent tasks from validated intents.
+ * COMPLAINT_CREATE depends on any investigation intents present in the same
+ * plan; a solo COMPLAINT_CREATE has empty dependsOn and is gated by workflow
+ * level / tool policy at execution time.
+ */
 export function planTasks(
   intents: ValidatedIntent[],
   facts: Record<string, unknown> = {},
@@ -35,19 +61,21 @@ export function planTasks(
     (left, right) => INTENT_ORDER.indexOf(left.intent) - INTENT_ORDER.indexOf(right.intent),
   );
 
-  const tasks: AgentTask[] = ordered.map((intent, index) => {
+  const usedIds = new Set<string>();
+
+  const tasks: AgentTask[] = ordered.map((intent) => {
+    const definition = getIntentDefinition(intent.intent);
     const entities = applyFacts(intent.entities, facts);
+    const required = definition?.requiredEntities ?? intent.missingEntities;
 
     return {
-      taskId: `task-${index + 1}`,
+      taskId: taskIdFor(intent.intent, usedIds),
       intent: intent.intent,
       agent: intent.agent,
       domain: intent.domain,
       entities,
       dependsOn: [],
-      missingEntities: intent.missingEntities.filter(
-        (name) => entities[name] === undefined,
-      ),
+      missingEntities: required.filter((name) => entities[name] === undefined),
       confidence: intent.confidence,
     };
   });

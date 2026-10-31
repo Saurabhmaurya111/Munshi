@@ -48,6 +48,27 @@ describe("validateClassification", () => {
     }
   });
 
+  it("keeps supported intents when an unsupported sibling is present", () => {
+    const outcome = validateClassification(
+      classification([
+        { intent: "ISSUE_REFUND", entities: {} },
+        {
+          intent: "UPI_PAYMENT_ISSUE",
+          confidence: 0.9,
+          entities: { transactionId: "TXN12345" },
+        },
+      ]),
+    );
+
+    expect(outcome.status).toBe("runnable");
+
+    if (outcome.status === "runnable") {
+      expect(outcome.intents.map((intent) => intent.intent)).toEqual([
+        "UPI_PAYMENT_ISSUE",
+      ]);
+    }
+  });
+
   it("rejects an agent that does not match the intent mapping", () => {
     const outcome = validateClassification(
       classification([
@@ -151,6 +172,45 @@ describe("validateClassification", () => {
     );
 
     expect(outcome.status).toBe("invalid");
+  });
+
+  it("drops an intent with invalid entities when another intent is valid", () => {
+    const outcome = validateClassification(
+      classification([
+        {
+          intent: "UPI_PAYMENT_ISSUE",
+          confidence: 0.9,
+          entities: { amount: -500 },
+        },
+        {
+          intent: "REFUND_STATUS",
+          confidence: 0.9,
+          entities: { refundId: "RFD12345" },
+        },
+      ]),
+    );
+
+    expect(outcome.status).toBe("runnable");
+
+    if (outcome.status === "runnable") {
+      expect(outcome.intents.map((intent) => intent.intent)).toEqual([
+        "REFUND_STATUS",
+      ]);
+    }
+  });
+
+  it("treats omitted confidence as threshold-edge rather than certainty", () => {
+    const outcome = validateClassification(
+      classification([
+        {
+          intent: "UPI_PAYMENT_ISSUE",
+          entities: { transactionId: "TXN12345" },
+        },
+      ]),
+      { confidenceThreshold: 0.51 },
+    );
+
+    expect(outcome.status).toBe("needs_clarification");
   });
 
   it("drops untrusted entity keys such as customerId and tool names", () => {

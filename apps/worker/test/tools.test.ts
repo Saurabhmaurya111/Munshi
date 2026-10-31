@@ -16,6 +16,8 @@ describe("tool registry", () => {
     expect(isToolAllowedForAgent("getTransactionStatus", "upi_agent")).toBe(true);
     expect(isToolAllowedForAgent("getTransactionStatus", "refund_agent")).toBe(false);
     expect(isToolAllowedForAgent("createComplaint", "complaint_agent")).toBe(true);
+    expect(isToolAllowedForAgent("getWalletBalance", "wallet_agent")).toBe(true);
+    expect(isToolAllowedForAgent("getWalletLedger", "upi_agent")).toBe(false);
   });
 
   it("rejects unknown tools", () => {
@@ -44,5 +46,16 @@ describe("tool registry", () => {
       ok: true,
       data: { transactionId: "TXN12345" },
     });
+  });
+
+  it("accepts wallet ledger and balance tools", () => {
+    expect(validateToolArgs("getWalletBalance", {}).ok).toBe(true);
+    expect(validateToolArgs("getWalletLedger", {}).ok).toBe(true);
+    expect(
+      validateToolArgs("getWalletPayments", {
+        channel: "wallet",
+        relativeDate: "last_week",
+      }).ok,
+    ).toBe(true);
   });
 });
