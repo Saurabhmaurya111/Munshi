@@ -5,6 +5,7 @@ import {
   getCaseForCustomer,
   listCaseEventsAfter,
   onCaseEvent,
+  startCaseEventListenBridge,
   type Db,
 } from "@repo/core";
 
@@ -18,6 +19,18 @@ function wsOriginAllowed(origin: string | undefined): boolean {
   return (
     origin.startsWith("http://localhost:") ||
     origin.startsWith("http://127.0.0.1:")
+  );
+}
+
+const DESK_QUEUE_ROOM = "desk:queue";
+
+function isDeskQueueEvent(type: string): boolean {
+  return (
+    type === "approval_requested" ||
+    type === "approval_granted" ||
+    type === "approval_rejected" ||
+    type === "takeover" ||
+    type === "hand_back"
   );
 }
 
@@ -103,6 +116,8 @@ export function attachRealtime(httpServer: HttpServer, db: Db): RealtimeServer {
   });
 
   deskNs.on("connection", (socket) => {
+    void socket.join(DESK_QUEUE_ROOM);
+
     socket.on(
       "subscribe",
       async (payload: { caseId?: string; lastSeq?: number }, ack?) => {
@@ -141,7 +156,22 @@ export function attachRealtime(httpServer: HttpServer, db: Db): RealtimeServer {
     );
   });
 
+  // Dedupe in-process bus + LISTEN/HTTP bridges for the same seq.
+  const recentlyFanout = new Map<string, number>();
+  const FANOUT_TTL_MS = 30_000;
+
   const unsubscribe = onCaseEvent(async (notice) => {
+    const key = `${notice.caseId}:${notice.seq}`;
+    const now = Date.now();
+    const prev = recentlyFanout.get(key);
+    if (prev && now - prev < FANOUT_TTL_MS) return;
+    recentlyFanout.set(key, now);
+    if (recentlyFanout.size > 2_000) {
+      for (const [k, at] of recentlyFanout) {
+        if (now - at > FANOUT_TTL_MS) recentlyFanout.delete(k);
+      }
+    }
+
     try {
       const gap = await listCaseEventsAfter(db, {
         caseId: notice.caseId,
@@ -162,22 +192,50 @@ export function attachRealtime(httpServer: HttpServer, db: Db): RealtimeServer {
 
       if (event.audience === "customer") {
         customerNs.to(`case:${notice.caseId}`).emit("case_event", payload);
+        deskNs.to(`case:${notice.caseId}`).emit("case_event", payload);
       }
       if (event.audience === "desk" || event.audience === "internal") {
         deskNs.to(`case:${notice.caseId}`).emit("case_event", payload);
       }
-      if (event.audience === "customer") {
-        deskNs.to(`case:${notice.caseId}`).emit("case_event", payload);
+      if (isDeskQueueEvent(event.type)) {
+        deskNs.to(DESK_QUEUE_ROOM).emit("desk_event", payload);
       }
     } catch {
       // Fan-out must not crash the API.
     }
   });
 
+  let stopListen: (() => Promise<void>) | null = null;
+  const listenUrl =
+    process.env.DATABASE_LISTEN_URL?.trim() || process.env.DATABASE_URL?.trim();
+  if (listenUrl) {
+    void startCaseEventListenBridge(listenUrl)
+      .then((stop) => {
+        stopListen = stop;
+        console.log(
+          JSON.stringify({
+            msg: "case_event_listen_bridge",
+            ok: true,
+          }),
+        );
+      })
+      .catch((error) => {
+        console.warn(
+          JSON.stringify({
+            msg: "case_event_listen_bridge",
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            hint: "Set DATABASE_LISTEN_URL to a session-mode Postgres URL, or CASE_EVENT_FANOUT_URL on the worker.",
+          }),
+        );
+      });
+  }
+
   return {
     io,
     stop: () => {
       unsubscribe();
+      if (stopListen) void stopListen();
       void io.close();
     },
   };

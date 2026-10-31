@@ -15,7 +15,7 @@ import {
   type LlmClassifierOptions,
 } from "./agent/classifier.js";
 import type { SupervisorDependencies } from "./agent/supervisor.js";
-import type { IntentClassifierInput, WorkflowLevel } from "./agent/types.js";
+import type { IntentClassifierInput } from "./agent/types.js";
 import { createEmbeddingProviderFromEnv } from "./knowledge/embedding.js";
 import { createKnowledgeLookup } from "./knowledge/lookup.js";
 import { createPolicyRetriever } from "./knowledge/retrieval.js";
@@ -138,14 +138,6 @@ export function describeAnswer(env: Record<string, string | undefined> = process
     : "draft";
 }
 
-function parseWorkflowLevel(raw: string | undefined): WorkflowLevel {
-  const value = raw?.trim();
-
-  if (value === "0") return 0;
-  if (value === "2") return 2;
-  return 1;
-}
-
 export function createWorkerDependencies(db: Db): SupervisorDependencies {
   const rules = createRuleBasedClassifier();
   const apiKey = process.env.SARVAM_API_KEY?.trim();
@@ -171,7 +163,8 @@ export function createWorkerDependencies(db: Db): SupervisorDependencies {
     tools,
     knowledge: createKnowledgeLookup(retriever),
     ...(apiKey ? { answer: buildSarvamAnswerModel(apiKey, model) } : {}),
-    workflowLevel: parseWorkflowLevel(process.env.MUNSHI_WORKFLOW_LEVEL),
+    // Per-turn level is loaded from the workflows table in processClaimedCase.
+    workflowLevel: 0,
     confidenceThreshold: 0.5,
   };
 }

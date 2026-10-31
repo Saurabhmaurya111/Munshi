@@ -98,6 +98,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions): Promise<void> {
           caseId: result.caseId,
           workerId,
           status: result.status,
+          workflowLevel: result.workflowLevel,
         }),
       );
     } catch (error) {

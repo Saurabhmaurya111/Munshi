@@ -13,6 +13,7 @@ import {
   type CaseRow,
   type OwnershipState,
 } from "./types.js";
+import { getWorkflowStatus } from "./workflows.js";
 
 type CaseDbRow = {
   id: string;
@@ -147,7 +148,36 @@ export type DeskQueueItem = {
   recommendation: string | null;
   ticketId: string | null;
   ticketStatus: string | null;
+  /** Level/name snapshotted when the hold was created — promote does not rewrite this. */
+  parkedAtWorkflowName: string | null;
+  parkedAtWorkflowLevel: 0 | 1 | 2 | null;
+  /** Live workflow level at queue-read time (may be higher after a mid-flight promote). */
+  currentWorkflowLevel: 0 | 1 | 2 | null;
+  /** Human-readable note: parked level vs current; never implies auto-execute. */
+  promotionHint: string | null;
 };
+
+export function buildPromotionHint(input: {
+  parkedLevel: 0 | 1 | 2 | null;
+  currentLevel: 0 | 1 | 2 | null;
+  workflowName?: string | null;
+}): string | null {
+  if (input.parkedLevel === null || input.currentLevel === null) return null;
+  if (input.parkedLevel === input.currentLevel) {
+    return `Parked at L${input.parkedLevel}; still needs an explicit desk decision.`;
+  }
+  const name = input.workflowName?.trim() || "workflow";
+  if (input.currentLevel > input.parkedLevel) {
+    return `Parked at L${input.parkedLevel}; ${name} is now L${input.currentLevel} — still needs explicit approve (no auto-run).`;
+  }
+  return `Parked at L${input.parkedLevel}; ${name} is now L${input.currentLevel}.`;
+}
+
+function asWorkflowLevel(value: unknown): 0 | 1 | 2 | null {
+  const n = Number(value);
+  if (n === 0 || n === 1 || n === 2) return n;
+  return null;
+}
 
 function noticeWithTicket(base: string, ticketId: string): string {
   const trimmed = base.trim();
@@ -189,6 +219,8 @@ export async function listDeskQueue(
     let escalationSummary: string | null = null;
     let recommendation: string | null = null;
     let ticketId: string | null = null;
+    let parkedAtWorkflowName: string | null = null;
+    let parkedAtWorkflowLevel: 0 | 1 | 2 | null = null;
 
     for (const event of events.rows) {
       if (
@@ -211,6 +243,24 @@ export async function listDeskQueue(
         if (typeof event.payload.ticketId === "string") {
           ticketId = event.payload.ticketId;
         }
+        if (parkedAtWorkflowLevel === null) {
+          parkedAtWorkflowLevel = asWorkflowLevel(event.payload.workflowLevel);
+          if (typeof event.payload.workflowName === "string") {
+            parkedAtWorkflowName = event.payload.workflowName;
+          }
+        }
+      }
+      if (
+        parkedAtWorkflowLevel === null &&
+        (event.type === "approval_requested" ||
+          (event.type === "assistant_message" &&
+            event.payload?.pendingApproval === true) ||
+          (event.type === "status" && event.payload?.pendingApproval === true))
+      ) {
+        parkedAtWorkflowLevel = asWorkflowLevel(event.payload?.workflowLevel);
+        if (typeof event.payload?.workflowName === "string") {
+          parkedAtWorkflowName = event.payload.workflowName;
+        }
       }
       if (
         !ticketId &&
@@ -221,13 +271,36 @@ export async function listDeskQueue(
       ) {
         ticketId = event.payload.ticketId;
       }
-      if (latestCustomerText && escalationSummary && ticketId) break;
+      if (
+        latestCustomerText &&
+        escalationSummary &&
+        ticketId &&
+        (caseRow.ownership !== "PENDING_APPROVAL" ||
+          parkedAtWorkflowLevel !== null)
+      ) {
+        break;
+      }
     }
 
     const ticket = await getCaseTicket(db, {
       caseId: caseRow.id,
       customerId: caseRow.customerId,
     });
+
+    let currentWorkflowLevel: 0 | 1 | 2 | null = null;
+    let promotionHint: string | null = null;
+    if (caseRow.ownership === "PENDING_APPROVAL") {
+      const live = await getWorkflowStatus(
+        db,
+        parkedAtWorkflowName ?? "default",
+      );
+      currentWorkflowLevel = live.level;
+      promotionHint = buildPromotionHint({
+        parkedLevel: parkedAtWorkflowLevel,
+        currentLevel: currentWorkflowLevel,
+        workflowName: parkedAtWorkflowName ?? live.name,
+      });
+    }
 
     items.push({
       case: caseRow,
@@ -238,6 +311,10 @@ export async function listDeskQueue(
       recommendation,
       ticketId: ticket?.complaintId ?? ticketId,
       ticketStatus: ticket?.status ?? null,
+      parkedAtWorkflowName,
+      parkedAtWorkflowLevel,
+      currentWorkflowLevel,
+      promotionHint,
     });
   }
 
@@ -268,6 +345,9 @@ export async function transferCaseToHumanWithEpoch(
     customerNotice?: string;
     includeCustomerNotice?: boolean;
     source?: "ai_escalate" | "customer_request" | "desk_takeover";
+    /** Snapshotted when the hold is created — mid-flight promote must not rewrite. */
+    workflowName?: string;
+    workflowLevel?: 0 | 1 | 2;
   },
 ): Promise<TransferResult> {
   const ownership = input.ownership ?? "HUMAN_OWNED";
@@ -352,6 +432,9 @@ export async function transferCaseToHumanWithEpoch(
           source: input.source ?? "ai_escalate",
           ticketId: ticket.complaintId,
           ticketStatus: ticket.status,
+          workflowName: input.workflowName ?? null,
+          workflowLevel:
+            input.workflowLevel === undefined ? null : input.workflowLevel,
         },
       }),
     );
@@ -1056,6 +1139,101 @@ function assertCanAgent(actor: DeskActor): void {
 }
 
 /**
+ * Park a drafted customer reply behind desk approval (L0 reply policy).
+ * Does not transfer ownership to a human specialist.
+ */
+export async function requestReplyApproval(
+  db: Db,
+  input: {
+    caseId: string;
+    stepId: string;
+    draftReply: string;
+    previewMessage?: string;
+    workflowName?: string;
+    workflowLevel?: 0 | 1 | 2;
+  },
+): Promise<{ case: CaseRow; deskEvent: CaseEventRow; statusEvent: CaseEventRow }> {
+  const draftReply = input.draftReply.trim();
+  if (!draftReply) {
+    throw new CoreError("draftReply is required", "BAD_REQUEST");
+  }
+
+  const workflowName = input.workflowName ?? "default";
+  const workflowLevel =
+    input.workflowLevel === undefined ? null : input.workflowLevel;
+
+  return withTransaction(db, async (client) => {
+    const caseResult = await client.query<CaseDbRow>(
+      `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    const caseRow = caseResult.rows[0];
+    if (!caseRow) {
+      throw new CoreError("Case not found", "NOT_FOUND");
+    }
+
+    await client.query(
+      `INSERT INTO action_intents (
+         case_id, step_id, tool, idempotency_key, state, args, result
+       ) VALUES (
+         $1, $2, 'sendCustomerReply', $3, 'intended', $4::jsonb, NULL
+       )
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+      [
+        input.caseId,
+        input.stepId,
+        `${input.caseId}:${input.stepId}`,
+        JSON.stringify({ text: draftReply }),
+      ],
+    );
+
+    let nextSeq = Number(caseRow.last_event_seq) + 1;
+    const deskEvent = await appendEvent(client, {
+      caseId: input.caseId,
+      nextSeq,
+      type: "approval_requested",
+      audience: "desk",
+      payload: {
+        stepId: input.stepId,
+        tool: "sendCustomerReply",
+        intentId: null,
+        draftReply,
+        workflowName,
+        workflowLevel,
+      },
+    });
+    nextSeq += 1;
+
+    const statusEvent = await appendEvent(client, {
+      caseId: input.caseId,
+      nextSeq,
+      type: "status",
+      audience: "customer",
+      payload: {
+        text:
+          input.previewMessage ??
+          "I’ve prepared a reply. It’s waiting for desk approval before I send it.",
+        pendingApproval: true,
+        stepId: input.stepId,
+        tool: "sendCustomerReply",
+        workflowName,
+        workflowLevel,
+      },
+    });
+
+    const updatedCase = await updateCaseAfterEvents(client, {
+      caseId: input.caseId,
+      lastEventSeq: nextSeq,
+      ownership: "PENDING_APPROVAL",
+      runnable: false,
+      clearLease: true,
+    });
+
+    return { case: updatedCase, deskEvent, statusEvent };
+  });
+}
+
+/**
  * Park a write behind desk approval and notify the customer (pendingApproval).
  */
 export async function requestWriteApproval(
@@ -1066,6 +1244,9 @@ export async function requestWriteApproval(
     tool: string;
     intentId?: string;
     message?: string;
+    /** Snapshotted when parked — mid-flight promote must not rewrite or auto-run. */
+    workflowName?: string;
+    workflowLevel?: 0 | 1 | 2;
   },
 ): Promise<{ case: CaseRow; deskEvent: CaseEventRow; statusEvent: CaseEventRow }> {
   return withTransaction(db, async (client) => {
@@ -1078,6 +1259,10 @@ export async function requestWriteApproval(
       throw new CoreError("Case not found", "NOT_FOUND");
     }
 
+    const workflowName = input.workflowName ?? "default";
+    const workflowLevel =
+      input.workflowLevel === undefined ? null : input.workflowLevel;
+
     let nextSeq = Number(caseRow.last_event_seq) + 1;
     const deskEvent = await appendEvent(client, {
       caseId: input.caseId,
@@ -1088,6 +1273,8 @@ export async function requestWriteApproval(
         stepId: input.stepId,
         tool: input.tool,
         intentId: input.intentId ?? null,
+        workflowName,
+        workflowLevel,
       },
     });
     nextSeq += 1;
@@ -1104,6 +1291,8 @@ export async function requestWriteApproval(
         pendingApproval: true,
         stepId: input.stepId,
         tool: input.tool,
+        workflowName,
+        workflowLevel,
       },
     });
 
@@ -1314,10 +1503,133 @@ export async function applyDeskCommand(
     });
   }
 
+  const parkEvent = await db.query<{
+    workflow_name: string | null;
+    workflow_level: unknown;
+  }>(
+    `SELECT payload->>'workflowName' AS workflow_name,
+            payload->'workflowLevel' AS workflow_level
+     FROM case_events
+     WHERE case_id = $1
+       AND type = 'approval_requested'
+       AND payload->>'stepId' = $2
+     ORDER BY seq DESC
+     LIMIT 1`,
+    [input.caseId, input.stepId],
+  );
+  const parkedAtWorkflowName = parkEvent.rows[0]?.workflow_name ?? "default";
+  const parkedAtWorkflowLevel = asWorkflowLevel(
+    parkEvent.rows[0]?.workflow_level,
+  );
+  const liveWorkflow = await getWorkflowStatus(db, parkedAtWorkflowName);
+  const promotionHint = buildPromotionHint({
+    parkedLevel: parkedAtWorkflowLevel,
+    currentLevel: liveWorkflow.level,
+    workflowName: parkedAtWorkflowName,
+  });
+
+  // Parked reply: publish the drafted assistant message (no external tool call).
+  if (intent.tool === "sendCustomerReply") {
+    const draftText =
+      typeof intent.args?.text === "string" ? intent.args.text.trim() : "";
+    if (!draftText) {
+      throw new CoreError("Draft reply missing", "BAD_REQUEST");
+    }
+
+    return withTransaction(db, async (client) => {
+      const duplicate = await findCommandEvent(
+        client,
+        input.caseId,
+        input.commandId,
+      );
+      if (duplicate) {
+        return {
+          case: mapCase(caseRow),
+          event: duplicate,
+          created: false,
+          execution: { state: "confirmed", data: { text: draftText } },
+        };
+      }
+
+      await client.query(
+        `UPDATE action_intents
+         SET state = 'confirmed',
+             result = $2::jsonb,
+             updated_at = now()
+         WHERE id = $1`,
+        [
+          intent.id,
+          JSON.stringify({ state: "confirmed", data: { text: draftText } }),
+        ],
+      );
+
+      const locked = await client.query<CaseDbRow>(
+        `SELECT * FROM cases WHERE id = $1 FOR UPDATE`,
+        [input.caseId],
+      );
+      const lockedCase = locked.rows[0];
+      if (!lockedCase) {
+        throw new CoreError("Case not found", "NOT_FOUND");
+      }
+
+      let nextSeq = Number(lockedCase.last_event_seq) + 1;
+      const event = await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "approval_granted",
+        audience: "desk",
+        payload: {
+          commandId: input.commandId,
+          actorId: input.actor.actorId,
+          stepId: input.stepId,
+          tool: intent.tool,
+          executionState: "confirmed",
+          note: input.note ?? null,
+          parkedAtWorkflowName,
+          parkedAtWorkflowLevel,
+          currentWorkflowLevel: liveWorkflow.level,
+          promotionHint,
+          autoExecutedDueToPromote: false,
+        },
+      });
+      nextSeq += 1;
+
+      await appendEvent(client, {
+        caseId: input.caseId,
+        nextSeq,
+        type: "assistant_message",
+        audience: "customer",
+        payload: {
+          text: draftText,
+          pendingApproval: false,
+          approvedReply: true,
+          workflowName: parkedAtWorkflowName,
+          workflowLevel: parkedAtWorkflowLevel,
+        },
+      });
+
+      const updatedCase = await updateCaseAfterEvents(client, {
+        caseId: input.caseId,
+        lastEventSeq: nextSeq,
+        ownership: "AI_ACTIVE",
+        runnable: false,
+        clearLease: true,
+      });
+
+      return {
+        case: updatedCase,
+        event,
+        created: true,
+        execution: { state: "confirmed", data: { text: draftText } },
+      };
+    });
+  }
+
   if (!input.executeWrite) {
     throw new CoreError("executeWrite is required for approve", "BAD_REQUEST");
   }
 
+  // Parked decisions stay explicit: promote never auto-executes this write.
   const execution = await input.executeWrite({
     caseId: input.caseId,
     stepId: intent.step_id,
@@ -1364,6 +1676,11 @@ export async function applyDeskCommand(
         tool: intent.tool,
         executionState: execution.state,
         note: input.note ?? null,
+        parkedAtWorkflowName,
+        parkedAtWorkflowLevel,
+        currentWorkflowLevel: liveWorkflow.level,
+        promotionHint,
+        autoExecutedDueToPromote: false,
       },
     });
     nextSeq += 1;
@@ -1439,4 +1756,127 @@ export async function listCaseEventsAfter(
       );
 
   return result.rows.map(mapEvent);
+}
+
+export type PendingApproval = {
+  caseId: string;
+  customerId: string;
+  ownership: OwnershipState;
+  updatedAt: Date;
+  stepId: string;
+  tool: string;
+  intentId: string | null;
+  args: Record<string, unknown>;
+  intentState: string;
+  requestedAt: Date;
+  customerMessage: string | null;
+  parkedAtWorkflowName: string | null;
+  parkedAtWorkflowLevel: 0 | 1 | 2 | null;
+  currentWorkflowLevel: 0 | 1 | 2 | null;
+  promotionHint: string | null;
+};
+
+/** Cases waiting on desk approve/reject, with the parked write intent. */
+export async function listPendingApprovals(
+  db: Db,
+  limit = 50,
+): Promise<PendingApproval[]> {
+  const result = await db.query<{
+    case_id: string;
+    customer_id: string;
+    ownership: OwnershipState;
+    updated_at: Date;
+    step_id: string;
+    tool: string;
+    intent_id: string | null;
+    args: Record<string, unknown>;
+    intent_state: string;
+    requested_at: Date;
+    customer_message: string | null;
+    workflow_name: string | null;
+    workflow_level: unknown;
+  }>(
+    `WITH pending AS (
+       SELECT c.id AS case_id,
+              c.customer_id,
+              c.ownership,
+              c.updated_at,
+              e.payload->>'stepId' AS step_id,
+              e.payload->>'tool' AS tool,
+              e.payload->>'intentId' AS intent_id,
+              e.payload->>'workflowName' AS workflow_name,
+              e.payload->'workflowLevel' AS workflow_level,
+              e.created_at AS requested_at,
+              e.seq
+       FROM cases c
+       JOIN LATERAL (
+         SELECT payload, created_at, seq
+         FROM case_events
+         WHERE case_id = c.id
+           AND type = 'approval_requested'
+         ORDER BY seq DESC
+         LIMIT 1
+       ) e ON true
+       WHERE c.ownership = 'PENDING_APPROVAL'
+       ORDER BY c.updated_at DESC
+       LIMIT $1
+     )
+     SELECT p.case_id,
+            p.customer_id,
+            p.ownership,
+            p.updated_at,
+            p.step_id,
+            p.tool,
+            p.intent_id,
+            COALESCE(i.args, '{}'::jsonb) AS args,
+            COALESCE(i.state::text, 'intended') AS intent_state,
+            p.requested_at,
+            p.workflow_name,
+            p.workflow_level,
+            (
+              SELECT payload->>'text'
+              FROM case_events
+              WHERE case_id = p.case_id
+                AND type = 'customer_message'
+              ORDER BY seq DESC
+              LIMIT 1
+            ) AS customer_message
+     FROM pending p
+     LEFT JOIN action_intents i
+       ON i.case_id = p.case_id
+      AND i.step_id = p.step_id
+     WHERE p.step_id IS NOT NULL
+       AND p.tool IS NOT NULL
+     ORDER BY p.requested_at DESC`,
+    [limit],
+  );
+
+  const items: PendingApproval[] = [];
+  for (const row of result.rows) {
+    const parkedAtWorkflowName = row.workflow_name ?? "default";
+    const parkedAtWorkflowLevel = asWorkflowLevel(row.workflow_level);
+    const live = await getWorkflowStatus(db, parkedAtWorkflowName);
+    items.push({
+      caseId: row.case_id,
+      customerId: row.customer_id,
+      ownership: row.ownership,
+      updatedAt: row.updated_at,
+      stepId: row.step_id,
+      tool: row.tool,
+      intentId: row.intent_id,
+      args: row.args ?? {},
+      intentState: row.intent_state,
+      requestedAt: row.requested_at,
+      customerMessage: row.customer_message,
+      parkedAtWorkflowName,
+      parkedAtWorkflowLevel,
+      currentWorkflowLevel: live.level,
+      promotionHint: buildPromotionHint({
+        parkedLevel: parkedAtWorkflowLevel,
+        currentLevel: live.level,
+        workflowName: parkedAtWorkflowName,
+      }),
+    });
+  }
+  return items;
 }

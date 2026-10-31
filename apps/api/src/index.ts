@@ -36,14 +36,27 @@ const server = createServer(async (req, res) => {
     body,
   });
 
-  const response = await app.fetch(request);
-  res.statusCode = response.status;
-  response.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "transfer-encoding") return;
-    res.setHeader(key, value);
-  });
-  const buf = Buffer.from(await response.arrayBuffer());
-  res.end(buf);
+  try {
+    const response = await app.fetch(request);
+    res.statusCode = response.status;
+    response.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "transfer-encoding") return;
+      res.setHeader(key, value);
+    });
+    const buf = Buffer.from(await response.arrayBuffer());
+    res.end(buf);
+  } catch (error) {
+    console.error(JSON.stringify({
+      msg: "request_failed",
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    res.statusCode = 503;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: "Service temporarily unavailable",
+      code: "UNAVAILABLE",
+    }));
+  }
 });
 
 attachRealtime(server, db);

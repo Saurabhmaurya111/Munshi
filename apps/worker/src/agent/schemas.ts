@@ -123,9 +123,13 @@ export const supervisorResponseSchema = z.object({
       references: z.array(z.string()).optional(),
       citations: z.array(z.string()).optional(),
       errorCode: z.string().optional(),
+      data: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
   requiresCustomerInput: z.boolean(),
+  /** L0 reply hold — keep after parse so turn can park instead of transferring. */
+  pendingReplyApproval: z.boolean().optional(),
+  draftReply: z.string().optional(),
 });
 
 export type RawClassificationSchema = z.infer<typeof rawClassificationSchema>;

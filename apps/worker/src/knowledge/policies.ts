@@ -11,6 +11,7 @@ export const POLICY_SOURCES: Array<{ file: string; documentId: string; category:
   { file: "recharge-troubleshooting.md", documentId: "policy-recharge", category: "recharge" },
   { file: "account-kyc-help.md", documentId: "policy-account-kyc", category: "account" },
   { file: "complaint-escalation.md", documentId: "policy-complaint", category: "complaint" },
+  { file: "wallet-payments.md", documentId: "policy-wallet-payments", category: "wallet" },
   { file: "support-faq.md", documentId: "policy-support-faq", category: "faq" },
 ];
 

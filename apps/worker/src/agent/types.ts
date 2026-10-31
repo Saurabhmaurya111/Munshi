@@ -219,4 +219,8 @@ export type SupervisorResponse = {
   message: string;
   tasks: SupervisorTaskSummary[];
   requiresCustomerInput: boolean;
+  /** L0 reply hold: draft is ready but must not transfer to a human. */
+  pendingReplyApproval?: boolean;
+  /** Customer-facing answer waiting for desk approve. */
+  draftReply?: string;
 };
